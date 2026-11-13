@@ -4131,6 +4131,87 @@ do
         return true
     end
 
+
+    -- DIAGNOSA NOCLIP: dump state karakter, tes tulis posisi, cari fungsi fisika game
+    function N.diagnose()
+        local out = {}
+        local function add(s) out[#out + 1] = s end
+        add("== K NEAR NOCLIP DIAGNOSA ==")
+        add("Refs: World=" .. tostring(Refs.World ~= nil) .. " State=" .. tostring(Refs.State ~= nil)
+            .. " Menu=" .. tostring(MenuModOk))
+        local s = playerState()
+        if not s then add("playerState() = nil -> tekan Load Data di dalam world"); return table.concat(out, "\n") end
+        local s2 = playerState()
+        add("state tabel sama tiap panggilan: " .. tostring(rawequal(s, s2)))
+        add("frozen: " .. tostring(table.isfrozen and table.isfrozen(s)) .. "  metatable: " .. tostring(getmetatable(s) ~= nil))
+        local keys = {}
+        for k, v in pairs(s) do keys[#keys + 1] = tostring(k) .. "=" .. tostring(v) .. " (" .. typeof(v) .. ")" end
+        table.sort(keys)
+        add("field state: " .. table.concat(keys, ", "))
+        if Refs.World then add(("world: w=%s h=%s"):format(tostring(Refs.World.w), tostring(Refs.World.h))) end
+        add(("tile di badan: (%d,%d) solid=%s | kiri solid=%s | kanan solid=%s"):format(
+            floor(s.x), floor(s.y), tostring(solidAt(floor(s.x), floor(s.y))),
+            tostring(solidAt(floor(s.x) - 1, floor(s.y))), tostring(solidAt(floor(s.x) + 1, floor(s.y)))))
+
+        -- tes tulis: geser x lalu baca lagi setelah 1 frame
+        local x0, y0 = s.x, s.y
+        local okw, errw = pcall(function() s.x = x0 + 0.37 end)
+        add("tulis s.x: " .. tostring(okw) .. (okw and "" or (" err=" .. tostring(errw))))
+        add("baca langsung: " .. tostring(s.x))
+        RunService.Heartbeat:Wait()
+        add("setelah 1 Heartbeat: " .. tostring(s.x))
+        RunService.RenderStepped:Wait()
+        add("setelah 1 RenderStepped: " .. tostring(s.x))
+        pcall(function() s.x = x0; s.y = y0 end)
+
+        -- tes tombol
+        for _, key in ipairs({ "keyLeft", "keyRight", "keyJump", "keyDown" }) do
+            local ok, r = pcall(function() return MenuModule.isDown(MenuModule, key) end)
+            add("isDown(" .. key .. ") -> ok=" .. tostring(ok) .. " val=" .. tostring(r))
+        end
+
+        -- upvalue fungsi state
+        if debug and debug.getupvalues then
+            local ok, ups = pcall(debug.getupvalues, Refs.State)
+            if ok and type(ups) == "table" then
+                local p = {}
+                for i, v in pairs(ups) do p[#p + 1] = tostring(i) .. ":" .. typeof(v) end
+                add("upvalue Refs.State: " .. table.concat(p, ", "))
+            end
+        end
+
+        -- cari fungsi fisika/tabrakan game (konstanta berisi grounded + vx)
+        if getgc and getconsts then
+            local found = 0
+            pcall(function()
+                for _, f in ipairs(getgc(true)) do
+                    if type(f) == "function" and (not islclosure or islclosure(f)) and not (isexecutorclosure and isexecutorclosure(f)) then
+                        local ok, c = pcall(getconsts, f)
+                        if ok and type(c) == "table" then
+                            local g, v, sol = false, false, false
+                            for _, k in pairs(c) do
+                                if k == "grounded" then g = true elseif k == "vx" then v = true end
+                            end
+                            if g and v and found < 8 then
+                                found += 1
+                                local info = debug.getinfo and debug.getinfo(f) or {}
+                                local names = {}
+                                for _, k in pairs(c) do if type(k) == "string" and #names < 25 then names[#names + 1] = k end end
+                                add(("fungsi fisika #%d: src=%s line=%s nups=%s const=[%s]"):format(found,
+                                    tostring(info.short_src), tostring(info.linedefined), tostring(info.nups), table.concat(names, ",")))
+                            end
+                        end
+                    end
+                end
+            end)
+            add("fungsi dengan grounded+vx ditemukan: " .. found)
+        else
+            add("getgc / getconstants tidak tersedia di executor ini")
+        end
+        add("executor: " .. tostring(identifyexecutor and select(1, identifyexecutor()) or "?"))
+        return table.concat(out, "\n")
+    end
+
     function N.toggle(v)
         if v == nil then v = not N.On end
         if v then return N.enable() end
@@ -5193,6 +5274,18 @@ loadBtn.MouseButton1Click:Connect(function()
         local ok = N.load()
         loadLabel.Text = N.Info
         toast(ok and "Data dimuat" or "Gagal memuat, pastikan sudah di dalam world")
+    end)
+end)
+
+local diagN = button(cLoad, "Diagnosa Noclip (salin ke clipboard)", { Size = UDim2.new(1, 0, 0, 38) })
+diagN.MouseButton1Click:Connect(function()
+    task.spawn(function()
+        local ok, text = pcall(N.diagnose)
+        if not ok then toast("Diagnosa gagal: " .. tostring(text)) return end
+        pcall(function() writefile("knear_noclip_diag.txt", text) end)
+        local copied = pcall(function() setclipboard(text) end)
+        print(text)
+        toast(copied and "Diagnosa disalin ke clipboard" or "Diagnosa dicetak di console (F9)")
     end)
 end)
 
