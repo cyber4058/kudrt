@@ -1088,7 +1088,14 @@ local function isDownWrapper(saved, key, ...)
         if key == "keyJump" then return AutoInput.jump end
         if key == "keyDown" then return AutoInput.down end
     end
-    return OrigIsDown(saved, key, ...)
+    local r = OrigIsDown(saved, key, ...)
+    if key == "keyLeft" or key == "keyRight" or key == "keyJump" or key == "keyDown" then
+        Misc.lastDown = Misc.lastDown or {}
+        Misc.lastDownT = Misc.lastDownT or {}
+        Misc.lastDown[key] = r and true or false
+        Misc.lastDownT[key] = os.clock()
+    end
+    return r
 end
 if MenuModOk and type(MenuModule) == "table" and type(rawget(MenuModule, "isDown")) == "function" then
     OrigIsDown = rawget(MenuModule, "isDown")
@@ -3987,24 +3994,25 @@ local N = {
 
 do
     local function keyDown(key, kc1, kc2)
-        local down = false
-        pcall(function()
-            if type(MenuModule) == "table" and type(MenuModule.isDown) == "function" then
-                down = MenuModule.isDown(MenuModule, key) and true or false
-            end
-        end)
-        if down then return true end
         if AutoInput.active then
             if key == "keyLeft" then return AutoInput.left end
             if key == "keyRight" then return AutoInput.right end
             if key == "keyJump" then return AutoInput.jump end
             if key == "keyDown" then return AutoInput.down end
         end
-        local ok, r = pcall(function()
-            return UserInputService:IsKeyDown(kc1) or (kc2 and UserInputService:IsKeyDown(kc2))
-        end)
-        return ok and r or false
+        -- jawaban asli game ke pengendalinya (disadap oleh pembungkus isDown), termasuk tombol layar
+        local d = Misc.lastDown and Misc.lastDown[key]
+        local tt = Misc.lastDownT and Misc.lastDownT[key]
+        if d and tt and os.clock() - tt < 0.3 then return true end
+        if kc1 then
+            local ok, r = pcall(function()
+                return UserInputService:IsKeyDown(kc1) or (kc2 and UserInputService:IsKeyDown(kc2))
+            end)
+            if ok and r then return true end
+        end
+        return false
     end
+    N.keyDown = keyDown
 
     local function partsCollide(on)
         local char = LocalPlayer.Character
@@ -4034,7 +4042,12 @@ do
     N.Loaded = false
     function N.load()
         local ok = false
+        local saved = { World = Refs.World, Inv = Refs.Inv, SetTile = Refs.SetTile, State = Refs.State,
+            Punch = Refs.Punch, Menu = Refs.Menu }
         pcall(function() ok = connectGame() end)
+        for k, v in pairs(saved) do
+            if Refs[k] == nil and v ~= nil then Refs[k] = v end
+        end
         local s = playerState()
         N.Loaded = (Refs.World ~= nil and s ~= nil)
         if N.Loaded then N.bind(); N.bindCtl() end
@@ -4225,7 +4238,7 @@ do
 
     function N.enable()
         if N.On then return true end
-        if not N.Loaded then N.load() end
+        if not (Refs.State and Refs.World) then N.load() end
         N.On = true
         N.Saved = {}
         N.px, N.py = nil, nil
@@ -4471,11 +4484,13 @@ do
             local t0 = os.clock()
             while os.clock() - t0 < 5 do
                 for k in pairs(cnt) do
-                    local ok, r = pcall(function() return MenuModule.isDown(MenuModule, k) end)
+                    local ok, r = pcall(N.keyDown, k)
                     if ok and r then cnt[k] += 1 end
                 end
                 task.wait(0.1)
             end
+            add("hook isDown terpasang: " .. tostring(MenuModule and MenuModule.isDown == isDownWrapper) .. "  rekaman: "
+                .. tostring(Misc.lastDown ~= nil))
             add(("terbaca: kiri=%d kanan=%d lompat=%d bawah=%d (dari 50 cuplikan)"):format(cnt.keyLeft, cnt.keyRight, cnt.keyJump, cnt.keyDown))
         end
         add("executor: " .. tostring(identifyexecutor and select(1, identifyexecutor()) or "?"))
