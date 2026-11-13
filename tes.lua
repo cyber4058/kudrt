@@ -4037,9 +4037,9 @@ do
         pcall(function() ok = connectGame() end)
         local s = playerState()
         N.Loaded = (Refs.World ~= nil and s ~= nil)
-        if N.Loaded then N.bind(); N.findBody() end
+        if N.Loaded then N.bind(); N.bindCtl() end
         if N.Loaded then
-            N.Info = ("World OK, karakter OK (x=%.1f y=%.1f) upvalue x/y=%s/%s body=%s"):format(s.x, s.y, tostring(N.ix), tostring(N.iy), tostring(N.body ~= nil))
+            N.Info = ("World OK, karakter OK (x=%.1f y=%.1f) upvalue x/y=%s/%s ctl=%s"):format(s.x, s.y, tostring(N.ix), tostring(N.iy), tostring(N.cf ~= nil))
         elseif Refs.World and not s then
             N.Info = "World OK, karakter belum terdeteksi (masuk world dulu)"
         elseif not Refs.World then
@@ -4101,16 +4101,59 @@ do
         return false
     end
 
+    -- Pengendali gerak asli game: fungsi dengan konstanta frameDt + keyLeft.
+    -- Posisi asli = upvalue-nya yang nilainya persis sama dengan state (bukan upvalue getter state).
+    N.cf, N.cx, N.cy = nil, nil, nil
+    function N.bindCtl()
+        N.cf, N.cx, N.cy = nil, nil, nil
+        local s = playerState()
+        if not s or not getgc or not getconsts or not (debug and debug.getupvalue) then return false end
+        pcall(function()
+            for _, f in ipairs(getgc(true)) do
+                if type(f) == "function" and (not islclosure or islclosure(f))
+                    and not (isexecutorclosure and isexecutorclosure(f)) then
+                    local ok, c = pcall(getconsts, f)
+                    if ok and type(c) == "table" then
+                        local h1, h2 = false, false
+                        for _, k in pairs(c) do
+                            if k == "frameDt" then h1 = true elseif k == "keyLeft" then h2 = true end
+                        end
+                        if h1 and h2 then
+                            local ix, iy
+                            for i = 1, 80 do
+                                local ok2, v = pcall(debug.getupvalue, f, i)
+                                if not ok2 then break end
+                                if type(v) == "number" then
+                                    if v == s.x and not ix then ix = i
+                                    elseif v == s.y and not iy then iy = i end
+                                end
+                            end
+                            if ix and iy then N.cf, N.cx, N.cy = f, ix, iy; return end
+                        end
+                    end
+                end
+            end
+        end)
+        return N.cf ~= nil
+    end
+
+    local function cget(i)
+        local ok, v = pcall(debug.getupvalue, N.cf, i)
+        return ok and v or nil
+    end
+    local function cset(i, v)
+        pcall(debug.setupvalue, N.cf, i, v)
+    end
+
     -- tahan posisi tiap frame (dipanggil dari beberapa event supaya menang atas fisika game)
     function N.hold()
         if not (N.On and N.px) then return end
-        local b = N.body
-        if b then
-            pcall(function()
-                b.x, b.y = N.px, N.py
-                b.vx, b.vy = 0, 0
-            end)
+        if N.cf then
+            cset(N.cx, N.px)
+            cset(N.cy, N.py)
         end
+        local b = N.body
+        if b then pcall(function() b.x, b.y = N.px, N.py; b.vx, b.vy = 0, 0 end) end
         if N.ix then
             setUp(N.ix, N.px)
             setUp(N.iy, N.py)
@@ -4121,13 +4164,13 @@ do
 
     function N.step(dt)
         if not Refs.State then N.Status = "Menunggu state game (tekan Load Data)"; return end
+        if not N.cf then N.bindCtl() end
         if not N.ix then N.bind() end
-        if not N.body and not N.ix then N.findBody() end
-        if not N.body and not N.ix then N.Status = "Posisi asli tidak ketemu (tekan Load Data)"; return end
+        if not N.cf and not N.ix then N.Status = "Posisi asli tidak ketemu (tekan Load Data)"; return end
         dt = math.min(dt, 0.1)
         local cx, cy
-        if N.body then cx, cy = N.body.x, N.body.y else cx, cy = getUp(N.ix), getUp(N.iy) end
-        if type(cx) ~= "number" or type(cy) ~= "number" then N.body = nil; N.ix = nil; return end
+        if N.cf then cx, cy = cget(N.cx), cget(N.cy) else cx, cy = getUp(N.ix), getUp(N.iy) end
+        if type(cx) ~= "number" or type(cy) ~= "number" then N.cf = nil; N.ix = nil; return end
 
         -- sinkron kalau game memindahkan kita jauh (teleport / respawn)
         if not N.px or abs(cx - N.px) > 3 or abs(cy - N.py) > 3 then
@@ -4159,7 +4202,7 @@ do
         N.Saved = {}
         N.px, N.py = nil, nil
         N.bind()
-        N.findBody()
+        N.bindCtl()
         partsCollide(false)
         N.Status = "Aktif"
         if N.Conn then pcall(function() N.Conn:Disconnect() end) end
@@ -4283,6 +4326,42 @@ do
             local s4 = playerState()
             add(("setelah 1 Heartbeat: %.3f"):format(s4 and s4.x or -1))
             setUp(N.ix, x1)
+        end
+        add("bindCtl: " .. tostring(N.bindCtl()) .. " cx=" .. tostring(N.cx) .. " cy=" .. tostring(N.cy))
+        if N.cf then
+            local ups = {}
+            for i = N.cx - 1, N.cy + 4 do ups[#ups + 1] = i .. "=" .. tostring(cget(i)) end
+            add("upvalue sekitar x/y pengendali: " .. table.concat(ups, ", "))
+            local x1 = cget(N.cx)
+            cset(N.cx, x1 + 0.6)
+            RunService.Heartbeat:Wait()
+            local x2 = cget(N.cx)
+            local sn = playerState()
+            add(("tes pengendali: x awal=%.3f, setelah tulis+1 frame=%.3f, salinan state=%.3f"):format(x1, x2, sn and sn.x or -1))
+            RunService.Heartbeat:Wait()
+            add(("2 frame: x=%.3f"):format(cget(N.cx)))
+            cset(N.cx, x1)
+        end
+        -- fungsi teleport milik game
+        if getgc then
+            local n = 0
+            pcall(function()
+                for _, v in ipairs(getgc(true)) do
+                    if n < 5 and type(v) == "table" then
+                        local okk, fn = pcall(rawget, v, "teleport")
+                        if okk and type(fn) == "function" and not (isexecutorclosure and isexecutorclosure(fn)) then
+                            n += 1
+                            local ks = {}
+                            pcall(function() for k in pairs(v) do if #ks < 30 then ks[#ks + 1] = tostring(k) end end end)
+                            local pc, cs = "?", {}
+                            pcall(function() local ni = debug.info(fn, "a"); pc = tostring(ni) end)
+                            pcall(function() for _, k in pairs(getconsts(fn)) do if #cs < 20 then cs[#cs + 1] = tostring(k) end end end)
+                            add(("teleport #%d: params=%s tabel=[%s] const=[%s]"):format(n, pc, table.concat(ks, ","), table.concat(cs, ",")))
+                        end
+                    end
+                end
+            end)
+            add("tabel dengan teleport: " .. n)
         end
         add("cari tabel posisi asli: " .. tostring(N.findBody()) .. " kandidat=" .. tostring(N.Cands and #N.Cands or 0))
         for i, c in ipairs(N.Cands or {}) do
