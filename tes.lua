@@ -4189,29 +4189,6 @@ do
     end
 end
 
-    -- loop ringan: kalau ada part karakter yang collision-nya kembali true (dipaksa game),
-    -- set ulang tanpa perlu scan terus-menerus.
-    task.spawn(function()
-        while alive() do
-            task.wait(0.5)
-            if N.On then
-                local char = LocalPlayer.Character
-                if char then
-                    local fixed = 0
-                    eachPart(char, function(p)
-                        if p.CanCollide then
-                            if N.Saved[p] == nil then N.Saved[p] = p.CanCollide end
-                            pcall(function() p.CanCollide = false end)
-                            fixed += 1
-                        end
-                    end)
-                    if fixed > 0 then N.Status = ("Aktif (dipulihkan %d part)"):format(fixed) end
-                end
-            end
-        end
-    end)
-end
-
 ---------------------------------------------------------------------
 -- GUI: putih bersih, menu fitur di sisi kanan, on/off pakai kotak centang
 ---------------------------------------------------------------------
@@ -5255,10 +5232,10 @@ do
 ---------------------------------------------------------------------
 -- HALAMAN VISUAL: NOCLIP
 ---------------------------------------------------------------------
-local cMain = card(PageV, "NOCLIP VISUAL", "Karakter bisa menembus tembok / lantai (hanya collision karakter)")
+local cMain = card(PageV, "NOCLIP VISUAL", "Karakter menembus tembok / lantai (versi agresif)")
 
 local cbNoclip
-cbNoclip = checkbox(cMain, "Aktifkan Noclip", "Semua part karakter dibuat tidak bertabrakan", N.On, function(on)
+cbNoclip = checkbox(cMain, "Aktifkan Noclip", "Tembus tembok + hapus weld + PlatformStand + teleport arah", N.On, function(on)
     if on then
         N.enable()
         toast("Noclip aktif")
@@ -5273,7 +5250,7 @@ local stLabel = label(cStat, { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enu
     Text = "Mati", TextWrapped = true, TextSize = 13, Font = FM })
 local infoLabel = label(cStat, { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
     TextWrapped = true, TextSize = 12, TextColor3 = C.sub,
-    Text = "Noclip hanya mematikan collision part karakter. Fitur game (panen, PNB, navigasi) tetap memakai data tile — kalau kamu jatuh menembus lantai ke luar world, gunakan SEFTY → Auto Rejoin untuk masuk lagi." })
+    Text = "Noclip agresif: CanCollide off, weld luar dihapus, PlatformStand, geser posisi (A/D/W/S atau tombol auto). Fitur game (panen, PNB, navigasi) tetap memakai data tile — kalau kamu jatuh menembus lantai ke luar world, gunakan SEFTY → Auto Rejoin untuk masuk lagi." })
 
 Updaters[#Updaters + 1] = function()
     local n = 0
@@ -5290,7 +5267,7 @@ end
 ---------------------------------------------------------------------
 local cAbout = card(PageInfo, "K NEAR", "PNB  |  HARVEST  |  AUTO PLANT  |  FACTORY  |  SEFTY AUTO  |  VISUAL")
 label(cAbout, { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, TextWrapped = true, TextSize = 13, TextColor3 = C.sub,
-    Text = "PNB: put & break otomatis.\nHARVEST: panen tanaman yang sudah siap.\nAUTO PLANT: tanam seed di atas blok pilihan, otomatis mencari blok.\nFACTORY: PNB sampai block habis, lalu tanam sambil panen, ulang lagi. Seed berlebih bisa di-drop otomatis.\nSEFTY AUTO: keluar world kalau ada Mod (diam < 5 detik dulu) dan otomatis masuk lagi ke world tujuan.\nVISUAL: noclip karakter supaya bisa menembus tembok.\n\nHanya satu fitur gerak berjalan dalam satu waktu. Menyalakan fitur lain menghentikan yang sedang berjalan." })
+    Text = "PNB: put & break otomatis.\nHARVEST: panen tanaman yang sudah siap.\nAUTO PLANT: tanam seed di atas blok pilihan, otomatis mencari blok.\nFACTORY: PNB sampai block habis, lalu tanam sambil panen, ulang lagi. Seed berlebih bisa di-drop otomatis.\nSEFTY AUTO: keluar world kalau ada Mod (diam < 5 detik dulu) dan otomatis masuk lagi ke world tujuan.\nVISUAL: noclip agresif supaya karakter menembus tembok.\n\nHanya satu fitur gerak berjalan dalam satu waktu. Menyalakan fitur lain menghentikan yang sedang berjalan." })
 local cDc = card(PageInfo, "Komunitas")
 label(cDc, { Size = UDim2.new(1, 0, 0, 18), Text = DISCORD_URL, TextSize = 13, TextColor3 = C.accent, Font = FM })
 local copyDc = button(cDc, "Salin link Discord", { Size = UDim2.new(1, 0, 0, 38) }, true)
