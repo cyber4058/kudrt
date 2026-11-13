@@ -4106,6 +4106,7 @@ do
     -- Posisi asli = upvalue-nya yang nilainya persis sama dengan state (bukan upvalue getter state).
     N.cf, N.cx, N.cy = nil, nil, nil
     function N.bindCtl()
+        local oldCf, oldCx, oldCy, oldXs, oldYs = N.cf, N.cx, N.cy, N.cxs, N.cys
         N.cf, N.cx, N.cy = nil, nil, nil
         local s = playerState()
         if not s or not getgc or not getconsts or not (debug and debug.getupvalue) then return false end
@@ -4154,6 +4155,7 @@ do
                 end
             end
         end)
+        if not N.cf and oldCf then N.cf, N.cx, N.cy, N.cxs, N.cys = oldCf, oldCx, oldCy, oldXs, oldYs end
         return N.cf ~= nil
     end
 
@@ -4460,6 +4462,21 @@ do
             end
         else
             add("noclip sedang aktif, status: " .. tostring(N.Status))
+        end
+        -- TES TOMBOL: 5 detik, tahan panah kanan / kiri / lompat di layar
+        do
+            local cnt = { keyLeft = 0, keyRight = 0, keyJump = 0, keyDown = 0 }
+            add("TES TOMBOL: tahan panah kanan / kiri / lompat selama 5 detik ...")
+            toast("Tes tombol 5 detik: tahan panah / lompat sekarang")
+            local t0 = os.clock()
+            while os.clock() - t0 < 5 do
+                for k in pairs(cnt) do
+                    local ok, r = pcall(function() return MenuModule.isDown(MenuModule, k) end)
+                    if ok and r then cnt[k] += 1 end
+                end
+                task.wait(0.1)
+            end
+            add(("terbaca: kiri=%d kanan=%d lompat=%d bawah=%d (dari 50 cuplikan)"):format(cnt.keyLeft, cnt.keyRight, cnt.keyJump, cnt.keyDown))
         end
         add("executor: " .. tostring(identifyexecutor and select(1, identifyexecutor()) or "?"))
         return table.concat(out, "\n")
