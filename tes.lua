@@ -1088,15 +1088,7 @@ local function isDownWrapper(saved, key, ...)
         if key == "keyJump" then return AutoInput.jump end
         if key == "keyDown" then return AutoInput.down end
     end
-    local r = OrigIsDown(saved, key, ...)
-    if key == "keyLeft" or key == "keyRight" or key == "keyJump" or key == "keyDown" then
-        Misc.lastDown = Misc.lastDown or {}
-        Misc.lastDownT = Misc.lastDownT or {}
-        Misc.lastDown[key] = r and true or false
-        Misc.lastDownT[key] = os.clock()
-        Misc.downCalls = (Misc.downCalls or 0) + 1
-    end
-    return r
+    return OrigIsDown(saved, key, ...)
 end
 if MenuModOk and type(MenuModule) == "table" and type(rawget(MenuModule, "isDown")) == "function" then
     OrigIsDown = rawget(MenuModule, "isDown")
@@ -1133,7 +1125,8 @@ local P = {
     Running = false, RunId = 0,
     BlockId = nil,
     HomeX = nil, HomeY = nil,          -- posisi berdiri saat PNB (tile)
-    DL = true, DR = true, Up = false,   -- arah break: bawah-kiri, bawah-kanan (diagonal), atas
+    DL = true, DR = true, Up = false, UL = false, UR = false,
+    -- arah break: bawah kiri/kanan dan tiga tile di atas (kiri/tengah/kanan)
     SkipTile = {}, Stubborn = {},       -- tile / item yang dilewati sementara (hasil cross check)
     PunchMs = 120,
     Collect = true,                    -- cadangan: jalan ke item yang tidak terjangkau remote
@@ -1314,10 +1307,17 @@ end
 
 -- drop yang termasuk area collect: radius dari posisi break, atau dekat tile yang barusan dipecah
 local function inCollectArea(d, tile)
-    local cx, cy = P.HomeX + 0.5, P.HomeY + 0.5
-    if abs(d.x - cx) <= P.Radius and abs(d.y - cy) <= P.Radius then return true end
-    if tile and abs(d.x - (tile.x + 0.5)) <= 1.5 and abs(d.y - (tile.y + 0.5)) <= 2.5 then return true end
-    return false
+    -- Radius selalu mengikuti tile yang baru di-break / dipanen.
+    -- Fallback ke posisi home hanya untuk collect umum tanpa tile tertentu.
+    local cx, cy
+    if tile then
+        cx, cy = tile.x + 0.5, tile.y + 0.5
+    elseif P.HomeX and P.HomeY then
+        cx, cy = P.HomeX + 0.5, P.HomeY + 0.5
+    else
+        return false
+    end
+    return abs(d.x - cx) <= P.Radius and abs(d.y - cy) <= P.Radius
 end
 
 local function itemsAround(list, tile)
@@ -1352,18 +1352,16 @@ local function fastCollect(run, tile)
             if dropOk(d, now, FastFail) and inCollectArea(d, tile) then batch[#batch + 1] = d end
         end
         if #batch == 0 then return end
-        say(("Collect cepat (%d)"):format(#batch))
+        say(("Collect satu per satu (%d)"):format(#batch))
         for _, d in ipairs(batch) do
-            task.spawn(function() pcall(fastTake, d) end) -- semua sekaligus (paralel)
-        end
-        local t0 = os.clock()
-        while run() and os.clock() - t0 < 1.0 do
-            local busy = false
-            for _, d in ipairs(batch) do
-                if d.taking or (dropAlive(list, d) and not (FastFail[d.uid] and os.clock() < FastFail[d.uid])) then busy = true break end
+            if not run() then return end
+            if dropAlive(list, d) and dropOk(d, os.clock(), FastFail) then
+                pcall(fastTake, d)
+                -- beri server waktu memperbarui drop/inventory sebelum item berikutnya
+                local t0 = os.clock()
+                while run() and d.taking and os.clock() - t0 < 0.8 do task.wait(0.03) end
+                task.wait(0.04)
             end
-            if not busy then break end
-            task.wait()
         end
     end
 end
@@ -1429,7 +1427,9 @@ local function targetList()
     local t = {}
     if P.DL then t[#t + 1] = { dx = -1, dy = 1, name = "bawah-kiri" } end
     if P.DR then t[#t + 1] = { dx = 1, dy = 1, name = "bawah-kanan" } end
-    if P.Up then t[#t + 1] = { dx = 0, dy = -1, name = "atas" } end
+    if P.UL then t[#t + 1] = { dx = -1, dy = -1, name = "atas-kiri" } end
+    if P.Up then t[#t + 1] = { dx = 0, dy = -1, name = "atas-tengah" } end
+    if P.UR then t[#t + 1] = { dx = 1, dy = -1, name = "atas-kanan" } end
     return t
 end
 
@@ -1614,7 +1614,7 @@ function P.start()
     if P.Running then return true end
     if not gameReady() then return false, "Belum terhubung ke game. Tekan Hubungkan." end
     if not P.BlockId then return false, "Pilih block dulu" end
-    if not (P.DL or P.DR or P.Up) then return false, "Pilih minimal satu arah break" end
+    if not (P.DL or P.DR or P.Up or P.UL or P.UR) then return false, "Pilih minimal satu arah break" end
     local px, py = getPlayerTile()
     if not px then return false, "Karakter tidak ditemukan (belum masuk world?)" end
     if not P.HomeX then P.HomeX, P.HomeY = px, py end
@@ -3620,7 +3620,7 @@ do
         if not F.BlockId then return false, "Pilih block PNB dulu" end
         if not F.SeedId then return false, "Pilih seed dulu" end
         if not F.BaseId then return false, "Pilih blok tempat menanam dulu" end
-        if not (P.DL or P.DR or P.Up) then return false, "Pilih minimal satu arah break" end
+        if not (P.DL or P.DR or P.Up or P.UL or P.UR) then return false, "Pilih minimal satu arah break" end
         if not Refs.Punch then return false, "Fungsi pukul game belum ketemu. Tekan Hubungkan." end
         if F.DropAt > 0 and not F.DropX then return false, "Atur posisi drop dulu (atau set batas drop = 0)" end
         local px, py = getPlayerTile()
@@ -3976,580 +3976,6 @@ do
 end
 
 ---------------------------------------------------------------------
--- VISUAL: NOCLIP (STATE GAME)
---   Game ini menghitung posisi + tabrakan dari state internal (x, y, vx, tile solid),
---   bukan dari fisika Roblox. Jadi noclip menggeser state game langsung:
---   1. Tiap frame baca tombol kiri / kanan / lompat / bawah (keyboard + tombol layar).
---   2. Posisi (s.x, s.y) digeser sendiri tanpa cek tile solid.
---   3. Kecepatan game (vx, vy) di-nol-kan supaya fisika game tidak menarik balik.
---   4. CanCollide part karakter ikut dimatikan sebagai tambahan.
----------------------------------------------------------------------
-local N = {
-    On = false,
-    Saved = {},
-    Conn = nil,
-    Status = "Mati",
-    Speed = 9,                  -- tile / detik
-    px = nil, py = nil,         -- posisi yang dipegang noclip
-}
-
-do
-    local function keyDown(key, kc1, kc2)
-        if AutoInput.active then
-            if key == "keyLeft" then return AutoInput.left end
-            if key == "keyRight" then return AutoInput.right end
-            if key == "keyJump" then return AutoInput.jump end
-            if key == "keyDown" then return AutoInput.down end
-        end
-        -- jawaban asli game ke pengendalinya (disadap oleh pembungkus isDown), termasuk tombol layar
-        local d = Misc.lastDown and Misc.lastDown[key]
-        local tt = Misc.lastDownT and Misc.lastDownT[key]
-        if d and tt and os.clock() - tt < 0.3 then return true end
-        if kc1 then
-            local ok, r = pcall(function()
-                return UserInputService:IsKeyDown(kc1) or (kc2 and UserInputService:IsKeyDown(kc2))
-            end)
-            if ok and r then return true end
-        end
-        return false
-    end
-    N.keyDown = keyDown
-
-    local function partsCollide(on)
-        local char = LocalPlayer.Character
-        if not char then return end
-        pcall(function()
-            for _, d in ipairs(char:GetDescendants()) do
-                if d:IsA("BasePart") then
-                    if not on then
-                        if N.Saved[d] == nil then N.Saved[d] = d.CanCollide end
-                        d.CanCollide = false
-                    end
-                end
-            end
-        end)
-    end
-
-    function N.restore()
-        for p, v in pairs(N.Saved) do
-            pcall(function()
-                if typeof(p) == "Instance" and p.Parent then p.CanCollide = v end
-            end)
-        end
-        table.clear(N.Saved)
-    end
-
-    -- LOAD DATA: cari ulang world, state karakter, inventori, dll. dari game
-    N.Loaded = false
-    function N.load()
-        local ok = false
-        local saved = { World = Refs.World, Inv = Refs.Inv, SetTile = Refs.SetTile, State = Refs.State,
-            Punch = Refs.Punch, Menu = Refs.Menu }
-        pcall(function() ok = connectGame() end)
-        for k, v in pairs(saved) do
-            if Refs[k] == nil and v ~= nil then Refs[k] = v end
-        end
-        local s = playerState()
-        N.Loaded = (Refs.World ~= nil and s ~= nil)
-        if N.Loaded then N.bind(); N.bindCtl() end
-        if N.Loaded then
-            N.Info = ("World OK, karakter OK (x=%.1f y=%.1f) upvalue x/y=%s/%s ctl=%s"):format(s.x, s.y, tostring(N.ix), tostring(N.iy), tostring(N.cf ~= nil))
-        elseif Refs.World and not s then
-            N.Info = "World OK, karakter belum terdeteksi (masuk world dulu)"
-        elseif not Refs.World then
-            N.Info = "World belum terdeteksi (masuk world lalu muat lagi)"
-        end
-        return N.Loaded
-    end
-    N.Info = "Belum dimuat. Tekan Load Data"
-
-    -- Refs.State() hanya mengembalikan SALINAN. Posisi asli = upvalue fungsi tsb.
-    -- Cari indeks upvalue x & y dengan mencocokkan nilai salinan (cocok persis).
-    N.ix, N.iy = nil, nil
-    function N.bind()
-        N.ix, N.iy = nil, nil
-        local s = playerState()
-        if not s or not (debug and debug.getupvalue and debug.setupvalue) then return false end
-        local vals = {}
-        for i = 1, 40 do
-            local ok, v = pcall(debug.getupvalue, Refs.State, i)
-            if not ok then break end
-            vals[i] = v
-        end
-        local ix, iy
-        for i = 1, #vals - 1 do
-            if vals[i] == s.x and vals[i + 1] == s.y then ix, iy = i, i + 1 break end
-        end
-        if ix and iy then N.ix, N.iy = ix, iy; return true end
-        return false
-    end
-
-    local function getUp(i)
-        local ok, v = pcall(debug.getupvalue, Refs.State, i)
-        return ok and v or nil
-    end
-    local function setUp(i, v)
-        pcall(debug.setupvalue, Refs.State, i, v)
-    end
-
-    -- Cari TABEL posisi asli game (bukan salinan): tabel di memori yang x,y,vx,vy-nya persis sama dengan state.
-    N.body = nil
-    function N.findBody()
-        N.body = nil
-        local s = playerState()
-        if not s or not getgc then return false end
-        local cands = {}
-        pcall(function()
-            for _, v in ipairs(getgc(true)) do
-                if type(v) == "table" and v ~= s then
-                    local ok = pcall(function()
-                        if rawget(v, "x") == s.x and rawget(v, "y") == s.y
-                            and type(rawget(v, "vx")) == "number" and type(rawget(v, "vy")) == "number" then
-                            cands[#cands + 1] = v
-                        end
-                    end)
-                end
-            end
-        end)
-        N.Cands = cands
-        if #cands > 0 then N.body = cands[1]; return true end
-        return false
-    end
-
-    -- Pengendali gerak asli game: fungsi dengan konstanta frameDt + keyLeft.
-    -- Posisi asli = upvalue-nya yang nilainya persis sama dengan state (bukan upvalue getter state).
-    N.cf, N.cx, N.cy = nil, nil, nil
-    function N.bindCtl()
-        local oldCf, oldCx, oldCy, oldXs, oldYs = N.cf, N.cx, N.cy, N.cxs, N.cys
-        N.cf, N.cx, N.cy = nil, nil, nil
-        local s = playerState()
-        if not s or not getgc or not getconsts or not (debug and debug.getupvalue) then return false end
-        pcall(function()
-            for _, f in ipairs(getgc(true)) do
-                if type(f) == "function" and (not islclosure or islclosure(f))
-                    and not (isexecutorclosure and isexecutorclosure(f)) then
-                    local ok, c = pcall(getconsts, f)
-                    if ok and type(c) == "table" then
-                        local h1, h2 = false, false
-                        for _, k in pairs(c) do
-                            if k == "frameDt" then h1 = true elseif k == "keyLeft" then h2 = true end
-                        end
-                        if h1 and h2 then
-                            local vals = {}
-                            for i = 1, 80 do
-                                local ok2, v = pcall(debug.getupvalue, f, i)
-                                if not ok2 then break end
-                                vals[i] = v
-                            end
-                            local ix, iy
-                            -- pasangan bersebelahan x lalu y (paling akurat)
-                            for i = 1, #vals - 1 do
-                                if vals[i] == s.x and vals[i + 1] == s.y then ix, iy = i, i + 1 break end
-                            end
-                            if not ix then
-                                for i = 1, #vals do
-                                    if vals[i] == s.x and not ix then ix = i end
-                                end
-                                if ix then
-                                    for d = 1, 3 do
-                                        if vals[ix + d] == s.y then iy = ix + d break end
-                                    end
-                                end
-                            end
-                            if ix and iy then
-                                N.cf, N.cx, N.cy = f, ix, iy
-                                -- posisi sekarang (ix, iy) + posisi frame sebelumnya (ix+3, iy+3) yang dipakai sapuan tabrakan
-                                N.cxs, N.cys = { ix }, { iy }
-                                if type(vals[ix + 3]) == "number" then N.cxs[#N.cxs + 1] = ix + 3 end
-                                if type(vals[iy + 3]) == "number" then N.cys[#N.cys + 1] = iy + 3 end
-                                return
-                            end
-                        end
-                    end
-                end
-            end
-        end)
-        if not N.cf and oldCf then N.cf, N.cx, N.cy, N.cxs, N.cys = oldCf, oldCx, oldCy, oldXs, oldYs end
-        return N.cf ~= nil
-    end
-
-    local function cget(i)
-        local ok, v = pcall(debug.getupvalue, N.cf, i)
-        return ok and v or nil
-    end
-    local function cset(i, v)
-        pcall(debug.setupvalue, N.cf, i, v)
-    end
-
-    -- tahan posisi tiap frame (dipanggil dari beberapa event supaya menang atas fisika game)
-    function N.hold()
-        if not (N.On and N.px) then return end
-        if N.cf then
-            -- tulis ke SEMUA upvalue yang menyimpan x / y (posisi sekarang + salinan frame sebelumnya)
-            for _, i in ipairs(N.cxs or { N.cx }) do cset(i, N.px) end
-            for _, i in ipairs(N.cys or { N.cy }) do cset(i, N.py) end
-        end
-        local b = N.body
-        if b then pcall(function() b.x, b.y = N.px, N.py; b.vx, b.vy = 0, 0 end) end
-        if N.ix then
-            setUp(N.ix, N.px)
-            setUp(N.iy, N.py)
-            if type(getUp(N.iy + 1)) == "number" then setUp(N.iy + 1, 0) end
-            if type(getUp(N.iy + 2)) == "number" then setUp(N.iy + 2, 0) end
-        end
-    end
-
-    function N.step(dt)
-        if not Refs.State then N.Status = "Menunggu state game (tekan Load Data)"; return end
-        if not N.cf then N.bindCtl() end
-        if not N.ix then N.bind() end
-        if not N.cf and not N.ix then N.Status = "Posisi asli tidak ketemu (tekan Load Data)"; return end
-        dt = math.min(dt, 0.1)
-        local cx, cy
-        if N.cf then cx, cy = cget(N.cx), cget(N.cy) else cx, cy = getUp(N.ix), getUp(N.iy) end
-        if type(cx) ~= "number" or type(cy) ~= "number" then N.cf = nil; N.ix = nil; return end
-
-        -- sinkron kalau game memindahkan kita jauh (teleport / respawn)
-        if not N.px or abs(cx - N.px) > 3 or abs(cy - N.py) > 3 then
-            N.px, N.py = cx, cy
-        end
-
-        local dx, dy = 0, 0
-        if keyDown("keyLeft", Enum.KeyCode.A, Enum.KeyCode.Left) then dx -= 1 end
-        if keyDown("keyRight", Enum.KeyCode.D, Enum.KeyCode.Right) then dx += 1 end
-        if keyDown("keyJump", Enum.KeyCode.W, Enum.KeyCode.Space) then dy -= 1 end   -- y naik = angka mengecil
-        if keyDown("keyDown", Enum.KeyCode.S, Enum.KeyCode.Down) then dy += 1 end
-
-        local w = Refs.World
-        local nx = N.px + dx * N.Speed * dt
-        local ny = N.py + dy * N.Speed * dt
-        if w then
-            nx = math.clamp(nx, 0.5, (w.w or 100) - 0.5)
-            ny = math.clamp(ny, 0.5, (w.h or 60) - 0.5)
-        end
-        N.px, N.py = nx, ny
-        N.hold()
-        local rx, ry
-        if N.cf then rx, ry = cget(N.cx), cget(N.cy) end
-        N.Status = ("Aktif | tombol K%d N%d A%d B%d | target %.2f,%.2f | game %s,%s | %s"):format(
-            dx < 0 and 1 or 0, dx > 0 and 1 or 0, dy < 0 and 1 or 0, dy > 0 and 1 or 0,
-            nx, ny, rx and ("%.2f"):format(rx) or "-", ry and ("%.2f"):format(ry) or "-",
-            N.cf and "ctl" or "getter")
-    end
-
-    function N.enable()
-        if N.On then return true end
-        if not (Refs.State and Refs.World) then N.load() end
-        N.On = true
-        N.Saved = {}
-        N.px, N.py = nil, nil
-        N.bind()
-        N.bindCtl()
-        partsCollide(false)
-        N.Status = "Aktif"
-        if N.Conn then pcall(function() N.Conn:Disconnect() end) end
-        N.Conn2, N.Conn3 = nil, nil
-        N.Conn2 = RunService.Stepped:Connect(function() if alive() then pcall(N.hold) end end)
-        pcall(function()
-            RunService:UnbindFromRenderStep("KnearNoclip")
-            RunService:BindToRenderStep("KnearNoclip", Enum.RenderPriority.Last.Value, function()
-                if alive() then pcall(N.hold) end
-            end)
-        end)
-        N.Conn = RunService.Heartbeat:Connect(function(dt)
-            if not alive() then
-                if N.Conn then N.Conn:Disconnect() N.Conn = nil end
-                return
-            end
-            if not N.On then return end
-            local ok, err = pcall(N.step, dt)
-            if not ok then N.Status = "Error: " .. tostring(err) end
-            partsCollide(false)
-        end)
-        return true
-    end
-
-    function N.disable()
-        if not N.On then return true end
-        N.On = false
-        if N.Conn then pcall(function() N.Conn:Disconnect() end) N.Conn = nil end
-        if N.Conn2 then pcall(function() N.Conn2:Disconnect() end) N.Conn2 = nil end
-        pcall(function() RunService:UnbindFromRenderStep("KnearNoclip") end)
-        N.restore()
-        N.px, N.py = nil, nil
-        N.Status = "Mati"
-        return true
-    end
-
-
-    -- DIAGNOSA NOCLIP: dump state karakter, tes tulis posisi, cari fungsi fisika game
-    function N.diagnose()
-        local out = {}
-        local function add(s) out[#out + 1] = s end
-        add("== K NEAR NOCLIP DIAGNOSA ==")
-        add("Refs: World=" .. tostring(Refs.World ~= nil) .. " State=" .. tostring(Refs.State ~= nil)
-            .. " Menu=" .. tostring(MenuModOk))
-        local s = playerState()
-        if not s then add("playerState() = nil -> tekan Load Data di dalam world"); return table.concat(out, "\n") end
-        local s2 = playerState()
-        add("state tabel sama tiap panggilan: " .. tostring(rawequal(s, s2)))
-        add("frozen: " .. tostring(table.isfrozen and table.isfrozen(s)) .. "  metatable: " .. tostring(getmetatable(s) ~= nil))
-        local keys = {}
-        for k, v in pairs(s) do keys[#keys + 1] = tostring(k) .. "=" .. tostring(v) .. " (" .. typeof(v) .. ")" end
-        table.sort(keys)
-        add("field state: " .. table.concat(keys, ", "))
-        if Refs.World then add(("world: w=%s h=%s"):format(tostring(Refs.World.w), tostring(Refs.World.h))) end
-        add(("tile di badan: (%d,%d) solid=%s | kiri solid=%s | kanan solid=%s"):format(
-            floor(s.x), floor(s.y), tostring(solidAt(floor(s.x), floor(s.y))),
-            tostring(solidAt(floor(s.x) - 1, floor(s.y))), tostring(solidAt(floor(s.x) + 1, floor(s.y)))))
-
-        -- tes tulis: geser x lalu baca lagi setelah 1 frame
-        local x0, y0 = s.x, s.y
-        local okw, errw = pcall(function() s.x = x0 + 0.37 end)
-        add("tulis s.x: " .. tostring(okw) .. (okw and "" or (" err=" .. tostring(errw))))
-        add("baca langsung: " .. tostring(s.x))
-        RunService.Heartbeat:Wait()
-        add("setelah 1 Heartbeat: " .. tostring(s.x))
-        RunService.RenderStepped:Wait()
-        add("setelah 1 RenderStepped: " .. tostring(s.x))
-        pcall(function() s.x = x0; s.y = y0 end)
-
-        -- tes tombol
-        for _, key in ipairs({ "keyLeft", "keyRight", "keyJump", "keyDown" }) do
-            local ok, r = pcall(function() return MenuModule.isDown(MenuModule, key) end)
-            add("isDown(" .. key .. ") -> ok=" .. tostring(ok) .. " val=" .. tostring(r))
-        end
-
-        -- upvalue fungsi state
-        if debug and debug.getupvalues then
-            local ok, ups = pcall(debug.getupvalues, Refs.State)
-            if ok and type(ups) == "table" then
-                local p = {}
-                for i, v in pairs(ups) do p[#p + 1] = tostring(i) .. ":" .. typeof(v) end
-                add("upvalue Refs.State: " .. table.concat(p, ", "))
-            end
-        end
-
-        -- cari fungsi fisika/tabrakan game (konstanta berisi grounded + vx)
-        if getgc and getconsts then
-            local found = 0
-            pcall(function()
-                for _, f in ipairs(getgc(true)) do
-                    if type(f) == "function" and (not islclosure or islclosure(f)) and not (isexecutorclosure and isexecutorclosure(f)) then
-                        local ok, c = pcall(getconsts, f)
-                        if ok and type(c) == "table" then
-                            local g, v, sol = false, false, false
-                            for _, k in pairs(c) do
-                                if k == "grounded" then g = true elseif k == "vx" then v = true end
-                            end
-                            if g and v and found < 8 then
-                                found += 1
-                                local info = debug.getinfo and debug.getinfo(f) or {}
-                                local names = {}
-                                for _, k in pairs(c) do if type(k) == "string" and #names < 25 then names[#names + 1] = k end end
-                                add(("fungsi fisika #%d: src=%s line=%s nups=%s const=[%s]"):format(found,
-                                    tostring(info.short_src), tostring(info.linedefined), tostring(info.nups), table.concat(names, ",")))
-                            end
-                        end
-                    end
-                end
-            end)
-            add("fungsi dengan grounded+vx ditemukan: " .. found)
-        else
-            add("getgc / getconstants tidak tersedia di executor ini")
-        end
-        add("bind upvalue x/y: " .. tostring(N.bind()) .. " ix=" .. tostring(N.ix) .. " iy=" .. tostring(N.iy))
-        if N.ix then
-            local x1 = getUp(N.ix)
-            setUp(N.ix, x1 + 0.37)
-            local s3 = playerState()
-            add(("tes upvalue: x sebelum=%.3f, salinan setelah tulis=%.3f"):format(x1, s3 and s3.x or -1))
-            RunService.Heartbeat:Wait()
-            local s4 = playerState()
-            add(("setelah 1 Heartbeat: %.3f"):format(s4 and s4.x or -1))
-            setUp(N.ix, x1)
-        end
-        add("bindCtl: " .. tostring(N.bindCtl()) .. " cx=" .. tostring(N.cx) .. " cy=" .. tostring(N.cy))
-        if N.cf then
-            local ups = {}
-            for i = N.cx - 1, N.cy + 4 do ups[#ups + 1] = i .. "=" .. tostring(cget(i)) end
-            add("upvalue sekitar x/y pengendali: " .. table.concat(ups, ", "))
-            local x1 = cget(N.cx)
-            add("indeks x ditulis: " .. table.concat(N.cxs or {}, ",") .. "  indeks y ditulis: " .. table.concat(N.cys or {}, ","))
-            for _, i in ipairs(N.cxs or { N.cx }) do cset(i, x1 + 0.6) end
-            RunService.Heartbeat:Wait()
-            local x2 = cget(N.cx)
-            local sn = playerState()
-            add(("tes pengendali: x awal=%.3f, setelah tulis+1 frame=%.3f, salinan state=%.3f"):format(x1, x2, sn and sn.x or -1))
-            RunService.Heartbeat:Wait()
-            add(("2 frame: x=%.3f"):format(cget(N.cx)))
-            for _, i in ipairs(N.cxs or { N.cx }) do cset(i, x1) end
-        end
-        -- fungsi teleport milik game
-        if getgc then
-            local n = 0
-            pcall(function()
-                for _, v in ipairs(getgc(true)) do
-                    if n < 5 and type(v) == "table" then
-                        local okk, fn = pcall(rawget, v, "teleport")
-                        if okk and type(fn) == "function" and not (isexecutorclosure and isexecutorclosure(fn)) then
-                            n += 1
-                            local ks = {}
-                            pcall(function() for k in pairs(v) do if #ks < 30 then ks[#ks + 1] = tostring(k) end end end)
-                            local pc, cs = "?", {}
-                            pcall(function() local ni = debug.info(fn, "a"); pc = tostring(ni) end)
-                            pcall(function() for _, k in pairs(getconsts(fn)) do if #cs < 20 then cs[#cs + 1] = tostring(k) end end end)
-                            add(("teleport #%d: params=%s tabel=[%s] const=[%s]"):format(n, pc, table.concat(ks, ","), table.concat(cs, ",")))
-                        end
-                    end
-                end
-            end)
-            add("tabel dengan teleport: " .. n)
-        end
-        add("cari tabel posisi asli: " .. tostring(N.findBody()) .. " kandidat=" .. tostring(N.Cands and #N.Cands or 0))
-        for i, c in ipairs(N.Cands or {}) do
-            if i > 4 then break end
-            local ks = {}
-            pcall(function() for k, v in pairs(c) do ks[#ks + 1] = tostring(k) .. "=" .. (type(v) == "number" and tostring(v) or typeof(v)) end end)
-            table.sort(ks)
-            add("  tabel #" .. i .. ": " .. table.concat(ks, ", "))
-        end
-        if N.body then
-            local bx = N.body.x
-            pcall(function() N.body.x = bx + 0.37 end)
-            local sa = playerState()
-            add(("tes tulis body.x: salinan state sesudah=%.3f (asli %.3f)"):format(sa and sa.x or -1, bx))
-            RunService.Heartbeat:Wait()
-            add(("setelah 1 Heartbeat body.x=%.3f"):format(N.body.x))
-            pcall(function() N.body.x = bx end)
-        end
-        -- fungsi game yang menyimpan x/y persis sama di upvalue-nya
-        if getgc and debug and debug.getupvalues then
-            local cnt = 0
-            pcall(function()
-                for _, f in ipairs(getgc(true)) do
-                    if cnt < 8 and type(f) == "function" and f ~= Refs.State and (not islclosure or islclosure(f))
-                        and not (isexecutorclosure and isexecutorclosure(f)) then
-                        local ok, ups = pcall(debug.getupvalues, f)
-                        if ok and type(ups) == "table" then
-                            local hx, hy = nil, nil
-                            for i, v in pairs(ups) do
-                                if type(v) == "number" and v == s.x then hx = i end
-                                if type(v) == "number" and v == s.y then hy = i end
-                            end
-                            if hx and hy then
-                                cnt += 1
-                                local c = {}
-                                pcall(function() for _, k in pairs(getconsts(f)) do if type(k) == "string" and #c < 25 then c[#c + 1] = k end end end)
-                                add(("fungsi pemegang x/y #%d: upvalue x=%s y=%s const=[%s]"):format(cnt, tostring(hx), tostring(hy), table.concat(c, ",")))
-                            end
-                        end
-                    end
-                end
-            end)
-            add("fungsi pemegang x/y: " .. cnt)
-        end
-        -- TES JALAN OTOMATIS: noclip ke kanan 1 detik tanpa sentuhan, catat posisi tiap 0.1 detik
-        if not N.On then
-            local sx = playerState()
-            if sx then
-                local x0, y0 = sx.x, sx.y
-                add(("TES JALAN: mulai x=%.3f y=%.3f"):format(x0, y0))
-                N.enable()
-                AutoInput.active, AutoInput.right = true, true
-                local rows = {}
-                for i = 1, 10 do
-                    task.wait(0.1)
-                    local g = playerState()
-                    rows[#rows + 1] = ("t=%.1f target=%.2f ctl=%s state=%.2f"):format(i * 0.1, N.px or -1,
-                        N.cf and tostring(cget(N.cx)) or "-", g and g.x or -1)
-                end
-                AutoInput.right = false
-                AutoInput.active = false
-                add("status: " .. tostring(N.Status))
-                for _, r in ipairs(rows) do add("  " .. r) end
-                -- kembalikan ke posisi awal supaya tidak terjebak di dalam blok
-                N.px, N.py = x0, y0
-                task.wait(0.3)
-                N.disable()
-                add("TES JALAN selesai (posisi dikembalikan ke awal)")
-            end
-        else
-            add("noclip sedang aktif, status: " .. tostring(N.Status))
-        end
-        -- TES TOMBOL: 5 detik, tahan panah kanan / kiri / lompat di layar
-        do
-            local cnt = { keyLeft = 0, keyRight = 0, keyJump = 0, keyDown = 0 }
-            add("TES TOMBOL: tahan panah kanan / kiri / lompat selama 5 detik ...")
-            if Misc.toast then pcall(Misc.toast, "Tes tombol 5 detik: tahan panah / lompat sekarang") end
-            local t0 = os.clock()
-            while os.clock() - t0 < 5 do
-                for k in pairs(cnt) do
-                    local ok, r = pcall(N.keyDown, k)
-                    if ok and r then cnt[k] += 1 end
-                end
-                task.wait(0.1)
-            end
-            add("hook isDown terpasang: " .. tostring(MenuModule and MenuModule.isDown == isDownWrapper) .. "  rekaman: "
-                .. tostring(Misc.lastDown ~= nil))
-            add(("terbaca: kiri=%d kanan=%d lompat=%d bawah=%d (dari 50 cuplikan)"):format(cnt.keyLeft, cnt.keyRight, cnt.keyJump, cnt.keyDown))
-        end
-        add("executor: " .. tostring(identifyexecutor and select(1, identifyexecutor()) or "?"))
-        return table.concat(out, "\n")
-    end
-
-
-    -- TES TOMBOL TERPANDU: 3 fase x 2 detik (kanan, kiri, lompat) dengan aba-aba di layar
-    function N.keyTest()
-        local out = {}
-        local function add(s) out[#out + 1] = s end
-        add("== TES TOMBOL ==")
-        add("hook isDown terpasang: " .. tostring(MenuModule and MenuModule.isDown == isDownWrapper))
-        if getconsts and OrigIsDown then
-            local c = {}
-            pcall(function() for _, k in pairs(getconsts(OrigIsDown)) do if #c < 30 then c[#c + 1] = tostring(k) end end end)
-            add("const isDown asli: [" .. table.concat(c, ",") .. "]")
-        end
-        if type(MenuModule) == "table" then
-            local ks = {}
-            pcall(function() for k, v in pairs(MenuModule) do if #ks < 60 then ks[#ks + 1] = tostring(k) .. ":" .. typeof(v) end end end)
-            table.sort(ks)
-            add("isi MenuModule: " .. table.concat(ks, ", "))
-        end
-        local phases = { { "KANAN", "keyRight" }, { "KIRI", "keyLeft" }, { "LOMPAT", "keyJump" } }
-        for _, ph in ipairs(phases) do
-            if Misc.toast then pcall(Misc.toast, "TAHAN " .. ph[1] .. " SEKARANG (2 detik)") end
-            local cnt = { keyLeft = 0, keyRight = 0, keyJump = 0, keyDown = 0 }
-            local calls0 = Misc.downCalls or 0
-            local maxvx, minvy = 0, 0
-            local t0 = os.clock()
-            while os.clock() - t0 < 2 do
-                for k in pairs(cnt) do
-                    local ok, r = pcall(N.keyDown, k)
-                    if ok and r then cnt[k] += 1 end
-                end
-                local s = playerState()
-                if s then
-                    if math.abs(s.vx or 0) > math.abs(maxvx) then maxvx = s.vx end
-                    if (s.vy or 0) < minvy then minvy = s.vy end
-                end
-                task.wait(0.1)
-            end
-            add(("fase %s: kiri=%d kanan=%d lompat=%d bawah=%d | panggilan isDown dari game=%d | vx maks=%.2f vy min=%.2f"):format(
-                ph[1], cnt.keyLeft, cnt.keyRight, cnt.keyJump, cnt.keyDown, (Misc.downCalls or 0) - calls0, maxvx, minvy))
-            task.wait(0.3)
-        end
-        return table.concat(out, "\n")
-    end
-
-    function N.toggle(v)
-        if v == nil then v = not N.On end
-        if v then return N.enable() end
-        return N.disable()
-    end
-end
-
----------------------------------------------------------------------
 -- GUI: putih bersih, menu fitur di sisi kanan, on/off pakai kotak centang
 ---------------------------------------------------------------------
 local C = {
@@ -4626,7 +4052,6 @@ local function toast(text)
     label(t, { AutomaticSize = Enum.AutomaticSize.XY, Text = text, TextColor3 = C.white, TextSize = 13, Font = FM })
     task.delay(2.6, function() pcall(function() t:Destroy() end) end)
 end
-Misc.toast = toast
 
 -- Ukuran window menyesuaikan layar
 local vp = (workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize) or Vector2.new(900, 600)
@@ -4833,21 +4258,19 @@ end
 
 
 ---------------------------------------------------------------------
--- HALAMAN: PNB, HARVEST, AUTO PLANT, FACTORY, SEFTY, VISUAL, INFO
+-- HALAMAN: PNB, HARVEST, AUTO PLANT, FACTORY, INFO
 ---------------------------------------------------------------------
 menuItem("pnb", "PNB")
 menuItem("harvest", "HARVEST")
 menuItem("plant", "AUTO PLANT")
 menuItem("factory", "FACTORY")
 menuItem("sefty", "SEFTY AUTO")
-menuItem("visual", "VISUAL")
 menuItem("info", "Info")
 local PagePNB = newPage("pnb")
 local PageH = newPage("harvest")
 local PageA = newPage("plant")
 local PageF = newPage("factory")
 local PageS = newPage("sefty")
-local PageV = newPage("visual")
 local PageInfo = newPage("info")
 
 -- ===== PNB =====
@@ -4973,19 +4396,26 @@ xyBtn.MouseButton1Click:Connect(function()
 end)
 
 label(cPos, { Size = UDim2.new(1, 0, 0, 20), Text = "Arah break  (x = block, P = karakter)", Font = FM, TextSize = 13 })
-local preview = label(cPos, { Size = UDim2.new(1, 0, 0, 62), Text = "", Font = Enum.Font.Code, TextSize = 16,
+local preview = label(cPos, { Size = UDim2.new(1, 0, 0, 78), Text = "", Font = Enum.Font.Code, TextSize = 16,
     TextColor3 = C.accent, TextXAlignment = Enum.TextXAlignment.Center, TextYAlignment = Enum.TextYAlignment.Center })
 local function updatePreview()
+    local ul = P.UL and "x" or "."
+    local u = P.Up and "x" or "."
+    local ur = P.UR and "x" or "."
     local dl = P.DL and "x" or "."
     local dr = P.DR and "x" or "."
-    local u = P.Up and "x" or "."
-    preview.Text = (" %s\n P\n%s %s"):format(u, dl, dr)
+    preview.Text = ("%s%s%s\n P "):format(ul, u, ur) .. "\n" .. dl .. "   " .. dr
 end
-local dirRow = mk("Frame", { Size = UDim2.new(1, 0, 0, 28), BackgroundTransparency = 1 }, cPos)
-list(dirRow, 6, Enum.FillDirection.Horizontal)
-checkbox(dirRow, "Bawah kiri", nil, P.DL, function(v) P.DL = v updatePreview() end, 0.34)
-checkbox(dirRow, "Bawah kanan", nil, P.DR, function(v) P.DR = v updatePreview() end, 0.34)
-checkbox(dirRow, "Atas", nil, P.Up, function(v) P.Up = v updatePreview() end, 0.28)
+local dirRowTop = mk("Frame", { Size = UDim2.new(1, 0, 0, 28), BackgroundTransparency = 1 }, cPos)
+list(dirRowTop, 6, Enum.FillDirection.Horizontal)
+checkbox(dirRowTop, "Atas kiri", nil, P.UL, function(v) P.UL = v updatePreview() end, 0.34)
+checkbox(dirRowTop, "Atas tengah", nil, P.Up, function(v) P.Up = v updatePreview() end, 0.33)
+checkbox(dirRowTop, "Atas kanan", nil, P.UR, function(v) P.UR = v updatePreview() end, 0.33)
+local dirRowBottom = mk("Frame", { Size = UDim2.new(1, 0, 0, 28), BackgroundTransparency = 1 }, cPos)
+list(dirRowBottom, 6, Enum.FillDirection.Horizontal)
+checkbox(dirRowBottom, "Bawah kiri", nil, P.DL, function(v) P.DL = v updatePreview() end, 0.5)
+checkbox(dirRowBottom, "Bawah kanan", nil, P.DR, function(v) P.DR = v updatePreview() end, 0.5)
+updatePreview()
 
 -- 4) Pengaturan
 local cSet = card(PagePNB, "Pengaturan")
@@ -5447,16 +4877,20 @@ end
 local cPnb, updPnb = posCard("Posisi PNB", "Tempat karakter berdiri saat PNB", "Belum ditentukan (otomatis posisi saat mulai)",
     "Posisi PNB", function() return F.PnbX, F.PnbY end, function(x, y) F.PnbX, F.PnbY = x, y end)
 label(cPnb, { Size = UDim2.new(1, 0, 0, 20), Text = "Arah break  (x = block, P = karakter)", Font = FM, TextSize = 13 })
-local pv = label(cPnb, { Size = UDim2.new(1, 0, 0, 62), Text = "", Font = Enum.Font.Code, TextSize = 16,
+local pv = label(cPnb, { Size = UDim2.new(1, 0, 0, 78), Text = "", Font = Enum.Font.Code, TextSize = 16,
     TextColor3 = C.accent, TextXAlignment = Enum.TextXAlignment.Center, TextYAlignment = Enum.TextYAlignment.Center })
 local function updPv()
-    pv.Text = (" %s\n P\n%s %s"):format(P.Up and "x" or ".", P.DL and "x" or ".", P.DR and "x" or ".")
+    pv.Text = ("%s%s%s\n P \n%s %s"):format(P.UL and "x" or ".", P.Up and "x" or ".", P.UR and "x" or ".", P.DL and "x" or ".", P.DR and "x" or ".")
 end
-local dirRow = mk("Frame", { Size = UDim2.new(1, 0, 0, 28), BackgroundTransparency = 1 }, cPnb)
-list(dirRow, 6, Enum.FillDirection.Horizontal)
-checkbox(dirRow, "Bawah kiri", nil, P.DL, function(v) P.DL = v updPv() end, 0.34)
-checkbox(dirRow, "Bawah kanan", nil, P.DR, function(v) P.DR = v updPv() end, 0.34)
-checkbox(dirRow, "Atas", nil, P.Up, function(v) P.Up = v updPv() end, 0.28)
+local dirRowTop = mk("Frame", { Size = UDim2.new(1, 0, 0, 28), BackgroundTransparency = 1 }, cPnb)
+list(dirRowTop, 6, Enum.FillDirection.Horizontal)
+checkbox(dirRowTop, "Atas kiri", nil, P.UL, function(v) P.UL = v updPv() end, 0.34)
+checkbox(dirRowTop, "Atas tengah", nil, P.Up, function(v) P.Up = v updPv() end, 0.33)
+checkbox(dirRowTop, "Atas kanan", nil, P.UR, function(v) P.UR = v updPv() end, 0.33)
+local dirRowBottom = mk("Frame", { Size = UDim2.new(1, 0, 0, 28), BackgroundTransparency = 1 }, cPnb)
+list(dirRowBottom, 6, Enum.FillDirection.Horizontal)
+checkbox(dirRowBottom, "Bawah kiri", nil, P.DL, function(v) P.DL = v updPv() end, 0.5)
+checkbox(dirRowBottom, "Bawah kanan", nil, P.DR, function(v) P.DR = v updPv() end, 0.5)
 
 -- 5) Posisi drop + batas
 local cDrop, updDrop = posCard("Posisi drop seed", "Tempat karakter berdiri saat menjatuhkan seed (jauhkan dari area tanam & PNB)",
@@ -5588,86 +5022,12 @@ Updaters[#Updaters + 1] = function()
 end
 end
 
--- ===== VISUAL =====
-do
----------------------------------------------------------------------
--- HALAMAN VISUAL: NOCLIP
----------------------------------------------------------------------
-local cMain = card(PageV, "NOCLIP VISUAL", "Karakter menembus tembok / lantai (versi agresif)")
-
-local cLoad = card(PageV, "LOAD DATA", "Muat data world + karakter dulu sebelum noclip")
-local loadRow = mk("Frame", { Size = UDim2.new(1, 0, 0, 36), BackgroundTransparency = 1 }, cLoad)
-local loadLabel = label(loadRow, { Size = UDim2.new(1, -130, 1, 0), Text = N.Info, Font = FM, TextSize = 12, TextWrapped = true })
-local loadBtn = button(loadRow, "Load Data", { Size = UDim2.fromOffset(120, 36), AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, 0, 0, 0) }, true)
-loadBtn.MouseButton1Click:Connect(function()
-    loadLabel.Text = "Memuat data..."
-    task.spawn(function()
-        local ok = N.load()
-        loadLabel.Text = N.Info
-        toast(ok and "Data dimuat" or "Gagal memuat, pastikan sudah di dalam world")
-    end)
-end)
-
-local diagN = button(cLoad, "Diagnosa Noclip (salin ke clipboard)", { Size = UDim2.new(1, 0, 0, 38) })
-diagN.MouseButton1Click:Connect(function()
-    task.spawn(function()
-        local ok, text = pcall(N.diagnose)
-        if not ok then toast("Diagnosa gagal: " .. tostring(text)) return end
-        pcall(function() writefile("knear_noclip_diag.txt", text) end)
-        local copied = pcall(function() setclipboard(text) end)
-        print(text)
-        toast(copied and "Diagnosa disalin ke clipboard" or "Diagnosa dicetak di console (F9)")
-    end)
-end)
-
-local keyBtn = button(cLoad, "Tes Tombol (6 detik, ikuti aba-aba)", { Size = UDim2.new(1, 0, 0, 38) })
-keyBtn.MouseButton1Click:Connect(function()
-    task.spawn(function()
-        local ok, text = pcall(N.keyTest)
-        if not ok then toast("Tes tombol gagal: " .. tostring(text)) return end
-        pcall(function() writefile("knear_key_test.txt", text) end)
-        local copied = pcall(function() setclipboard(text) end)
-        print(text)
-        toast(copied and "Hasil tes tombol disalin ke clipboard" or "Hasil dicetak di console (F9)")
-    end)
-end)
-
-local cbNoclip
-cbNoclip = checkbox(cMain, "Aktifkan Noclip", "Geser posisi game langsung, tembus blok (kiri/kanan/lompat/bawah)", N.On, function(on)
-    if on then
-        N.enable()
-        toast("Noclip aktif")
-    else
-        N.disable()
-        toast("Noclip mati")
-    end
-end)
-
-local cStat = card(PageV, "Status")
-local stLabel = label(cStat, { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
-    Text = "Mati", TextWrapped = true, TextSize = 13, Font = FM })
-local infoLabel = label(cStat, { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
-    TextWrapped = true, TextSize = 12, TextColor3 = C.sub,
-    Text = "Noclip menggeser posisi game langsung: kiri/kanan = geser, lompat = naik, bawah = turun. Fitur game (panen, PNB, navigasi) tetap memakai data tile — kalau kamu jatuh menembus lantai ke luar world, gunakan SEFTY → Auto Rejoin untuk masuk lagi." })
-
-Updaters[#Updaters + 1] = function()
-    local n = 0
-    for _ in pairs(N.Saved) do n += 1 end
-    stLabel.Text = N.On and ("Noclip: " .. N.Status) or "Noclip: Mati"
-    loadLabel.Text = N.Info
-    loadLabel.TextColor3 = N.Loaded and C.ok or C.bad
-    stLabel.TextColor3 = N.On and C.ok or C.text
-    -- sinkronkan checkbox kalau status berubah dari luar (mis. respawn)
-    if N.On ~= cbNoclip.get() then cbNoclip.set(N.On, true) end
-end
-end
-
 ---------------------------------------------------------------------
 -- HALAMAN INFO
 ---------------------------------------------------------------------
-local cAbout = card(PageInfo, "K NEAR", "PNB  |  HARVEST  |  AUTO PLANT  |  FACTORY  |  SEFTY AUTO  |  VISUAL")
+local cAbout = card(PageInfo, "K NEAR", "PNB  |  HARVEST  |  AUTO PLANT  |  FACTORY  |  SEFTY AUTO")
 label(cAbout, { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, TextWrapped = true, TextSize = 13, TextColor3 = C.sub,
-    Text = "PNB: put & break otomatis.\nHARVEST: panen tanaman yang sudah siap.\nAUTO PLANT: tanam seed di atas blok pilihan, otomatis mencari blok.\nFACTORY: PNB sampai block habis, lalu tanam sambil panen, ulang lagi. Seed berlebih bisa di-drop otomatis.\nSEFTY AUTO: keluar world kalau ada Mod (diam < 5 detik dulu) dan otomatis masuk lagi ke world tujuan.\nVISUAL: noclip agresif supaya karakter menembus tembok.\n\nHanya satu fitur gerak berjalan dalam satu waktu. Menyalakan fitur lain menghentikan yang sedang berjalan." })
+    Text = "PNB: put & break otomatis.\nHARVEST: panen tanaman yang sudah siap.\nAUTO PLANT: tanam seed di atas blok pilihan, otomatis mencari blok.\nFACTORY: PNB sampai block habis, lalu tanam sambil panen, ulang lagi. Seed berlebih bisa di-drop otomatis.\nSEFTY AUTO: keluar world kalau ada Mod (diam < 5 detik dulu) dan otomatis masuk lagi ke world tujuan.\n\nHanya satu fitur berjalan dalam satu waktu. Menyalakan fitur lain menghentikan yang sedang berjalan." })
 local cDc = card(PageInfo, "Komunitas")
 label(cDc, { Size = UDim2.new(1, 0, 0, 18), Text = DISCORD_URL, TextSize = 13, TextColor3 = C.accent, Font = FM })
 local copyDc = button(cDc, "Salin link Discord", { Size = UDim2.new(1, 0, 0, 38) }, true)
@@ -5764,7 +5124,6 @@ end
 -- INIT & CLEANUP
 ---------------------------------------------------------------------
 Session.Cleanup = function()
-    pcall(N.disable)          -- matikan noclip dulu (kembalikan CanCollide asli)
     P.Running = false
     P.RunId += 1
     H.Running = false
