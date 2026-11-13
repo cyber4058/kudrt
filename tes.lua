@@ -4030,9 +4030,38 @@ do
         table.clear(N.Saved)
     end
 
+    -- LOAD DATA: cari ulang world, state karakter, inventori, dll. dari game
+    N.Loaded = false
+    function N.load()
+        local ok = false
+        pcall(function() ok = connectGame() end)
+        local s = playerState()
+        N.Loaded = (Refs.World ~= nil and s ~= nil)
+        if N.Loaded then
+            N.Info = ("World OK, karakter OK (x=%.1f y=%.1f)"):format(s.x, s.y)
+        elseif Refs.World and not s then
+            N.Info = "World OK, karakter belum terdeteksi (masuk world dulu)"
+        elseif not Refs.World then
+            N.Info = "World belum terdeteksi (masuk world lalu muat lagi)"
+        end
+        return N.Loaded
+    end
+    N.Info = "Belum dimuat. Tekan Load Data"
+
+    -- tahan posisi tiap frame (dipanggil dari beberapa event supaya menang atas fisika game)
+    function N.hold()
+        if not (N.On and N.px) then return end
+        local s = playerState()
+        if not s then return end
+        s.x, s.y = N.px, N.py
+        s.vx = 0
+        if type(s.vy) == "number" then s.vy = 0 end
+        s.grounded = true
+    end
+
     function N.step(dt)
         local s = playerState()
-        if not s then N.Status = "Menunggu state game"; return end
+        if not s then N.Status = "Menunggu state game (tekan Load Data)"; return end
         dt = math.min(dt, 0.1)
 
         -- sinkron kalau game memindahkan kita jauh (teleport / respawn)
@@ -4055,22 +4084,28 @@ do
         end
         N.px, N.py = nx, ny
 
-        s.x, s.y = nx, ny
-        s.vx = 0
-        if type(s.vy) == "number" then s.vy = 0 end
         if dx ~= 0 then s.facing = dx end
-        s.grounded = true
+        N.hold()
         N.Status = "Aktif"
     end
 
     function N.enable()
         if N.On then return true end
+        if not N.Loaded then N.load() end
         N.On = true
         N.Saved = {}
         N.px, N.py = nil, nil
         partsCollide(false)
         N.Status = "Aktif"
         if N.Conn then pcall(function() N.Conn:Disconnect() end) end
+        N.Conn2, N.Conn3 = nil, nil
+        N.Conn2 = RunService.Stepped:Connect(function() if alive() then pcall(N.hold) end end)
+        pcall(function()
+            RunService:UnbindFromRenderStep("KnearNoclip")
+            RunService:BindToRenderStep("KnearNoclip", Enum.RenderPriority.Last.Value, function()
+                if alive() then pcall(N.hold) end
+            end)
+        end)
         N.Conn = RunService.Heartbeat:Connect(function(dt)
             if not alive() then
                 if N.Conn then N.Conn:Disconnect() N.Conn = nil end
@@ -4088,6 +4123,8 @@ do
         if not N.On then return true end
         N.On = false
         if N.Conn then pcall(function() N.Conn:Disconnect() end) N.Conn = nil end
+        if N.Conn2 then pcall(function() N.Conn2:Disconnect() end) N.Conn2 = nil end
+        pcall(function() RunService:UnbindFromRenderStep("KnearNoclip") end)
         N.restore()
         N.px, N.py = nil, nil
         N.Status = "Mati"
@@ -5146,6 +5183,19 @@ do
 ---------------------------------------------------------------------
 local cMain = card(PageV, "NOCLIP VISUAL", "Karakter menembus tembok / lantai (versi agresif)")
 
+local cLoad = card(PageV, "LOAD DATA", "Muat data world + karakter dulu sebelum noclip")
+local loadRow = mk("Frame", { Size = UDim2.new(1, 0, 0, 36), BackgroundTransparency = 1 }, cLoad)
+local loadLabel = label(loadRow, { Size = UDim2.new(1, -130, 1, 0), Text = N.Info, Font = FM, TextSize = 12, TextWrapped = true })
+local loadBtn = button(loadRow, "Load Data", { Size = UDim2.fromOffset(120, 36), AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, 0, 0, 0) }, true)
+loadBtn.MouseButton1Click:Connect(function()
+    loadLabel.Text = "Memuat data..."
+    task.spawn(function()
+        local ok = N.load()
+        loadLabel.Text = N.Info
+        toast(ok and "Data dimuat" or "Gagal memuat, pastikan sudah di dalam world")
+    end)
+end)
+
 local cbNoclip
 cbNoclip = checkbox(cMain, "Aktifkan Noclip", "Geser posisi game langsung, tembus blok (kiri/kanan/lompat/bawah)", N.On, function(on)
     if on then
@@ -5168,6 +5218,8 @@ Updaters[#Updaters + 1] = function()
     local n = 0
     for _ in pairs(N.Saved) do n += 1 end
     stLabel.Text = N.On and ("Noclip: " .. N.Status) or "Noclip: Mati"
+    loadLabel.Text = N.Info
+    loadLabel.TextColor3 = N.Loaded and C.ok or C.bad
     stLabel.TextColor3 = N.On and C.ok or C.text
     -- sinkronkan checkbox kalau status berubah dari luar (mis. respawn)
     if N.On ~= cbNoclip.get() then cbNoclip.set(N.On, true) end
