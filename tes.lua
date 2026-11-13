@@ -4056,14 +4056,15 @@ do
         N.ix, N.iy = nil, nil
         local s = playerState()
         if not s or not (debug and debug.getupvalue and debug.setupvalue) then return false end
-        local ix, iy
+        local vals = {}
         for i = 1, 40 do
             local ok, v = pcall(debug.getupvalue, Refs.State, i)
             if not ok then break end
-            if type(v) == "number" then
-                if v == s.x and not ix then ix = i
-                elseif v == s.y and not iy then iy = i end
-            end
+            vals[i] = v
+        end
+        local ix, iy
+        for i = 1, #vals - 1 do
+            if vals[i] == s.x and vals[i + 1] == s.y then ix, iy = i, i + 1 break end
         end
         if ix and iy then N.ix, N.iy = ix, iy; return true end
         return false
@@ -4119,13 +4120,25 @@ do
                             if k == "frameDt" then h1 = true elseif k == "keyLeft" then h2 = true end
                         end
                         if h1 and h2 then
-                            local ix, iy
+                            local vals = {}
                             for i = 1, 80 do
                                 local ok2, v = pcall(debug.getupvalue, f, i)
                                 if not ok2 then break end
-                                if type(v) == "number" then
-                                    if v == s.x and not ix then ix = i
-                                    elseif v == s.y and not iy then iy = i end
+                                vals[i] = v
+                            end
+                            local ix, iy
+                            -- pasangan bersebelahan x lalu y (paling akurat)
+                            for i = 1, #vals - 1 do
+                                if vals[i] == s.x and vals[i + 1] == s.y then ix, iy = i, i + 1 break end
+                            end
+                            if not ix then
+                                for i = 1, #vals do
+                                    if vals[i] == s.x and not ix then ix = i end
+                                end
+                                if ix then
+                                    for d = 1, 3 do
+                                        if vals[ix + d] == s.y then iy = ix + d break end
+                                    end
                                 end
                             end
                             if ix and iy then N.cf, N.cx, N.cy = f, ix, iy; return end
