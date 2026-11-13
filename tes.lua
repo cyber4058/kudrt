@@ -4213,7 +4213,12 @@ do
         end
         N.px, N.py = nx, ny
         N.hold()
-        N.Status = "Aktif"
+        local rx, ry
+        if N.cf then rx, ry = cget(N.cx), cget(N.cy) end
+        N.Status = ("Aktif | tombol K%d N%d A%d B%d | target %.2f,%.2f | game %s,%s | %s"):format(
+            dx < 0 and 1 or 0, dx > 0 and 1 or 0, dy < 0 and 1 or 0, dy > 0 and 1 or 0,
+            nx, ny, rx and ("%.2f"):format(rx) or "-", ry and ("%.2f"):format(ry) or "-",
+            N.cf and "ctl" or "getter")
     end
 
     function N.enable()
