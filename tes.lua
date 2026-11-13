@@ -3968,17 +3968,20 @@ do
 end
 
 ---------------------------------------------------------------------
--- VISUAL: NOCLIP
---   1. Semua part karakter dibuat tidak bertabrakan (CanCollide=false) -> bisa menembus tembok.
---   2. Otomatis dipasang ulang saat respawn / part baru muncul / ragdoll.
---   3. Bisa di-toggle kapan saja; saat mati, collision dikembalikan seperti semula.
+-- VISUAL: NOCLIP (VERSI AGRESIF)
+--   1. Mematikan CanCollide semua part.
+--   2. Menghapus Weld/WeldConstraint (kadang game nge-weld karakter).
+--   3. Mengakali Humanoid (PlatformStand) dan memaksa posisi (Teleport).
+--   4. Dipasang ulang secara instan kalau game mencoba me-reset fisika.
 ---------------------------------------------------------------------
 local N = {
     On = false,
-    Saved = {},                 -- [part] = CanCollide asli
-    Conn = nil,                 -- koneksi CharacterAdded
-    PartConns = {},             -- koneksi ChildAdded / StateChanged per karakter
+    Saved = {},
+    Conn = nil,
+    PartConns = {},
     Status = "Mati",
+    Heartbeat = nil,
+    PlatformStand = false,
 }
 
 do
@@ -3991,37 +3994,126 @@ do
         end)
     end
 
+    -- Terapkan noclip ke satu karakter
     function N.apply(char)
         if not char then return end
+        
+        -- 1. Matikan collision semua part
         eachPart(char, function(p)
             if N.Saved[p] == nil then
                 N.Saved[p] = p.CanCollide
             end
-            pcall(function() p.CanCollide = false end)
+            pcall(function() 
+                p.CanCollide = false 
+                p.CanTouch = false
+            end)
         end)
+
+        -- 2. Hapus semua Weld / WeldConstraint yang menempel ke karakter (kadang game mengunci karakter di tile)
+        pcall(function()
+            for _, d in ipairs(char:GetDescendants()) do
+                if d:IsA("Weld") or d:IsA("WeldConstraint") or d:IsA("Motor6D") then
+                    -- Hati-hati jangan hapus Motor6D yang menggambar sendi (biar animasi tetap jalan)
+                    if d:IsA("Weld") or d:IsA("WeldConstraint") then
+                        -- hanya hapus weld yang nyambung ke part luar karakter
+                        if d.Part0 and d.Part0:IsDescendantOf(char) and d.Part1 and d.Part1:IsDescendantOf(workspace) and not d.Part1:IsDescendantOf(char) then
+                            d:Destroy()
+                        end
+                    end
+                end
+            end
+        end)
+
+        -- 3. Akali Humanoid
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hum then
+            pcall(function()
+                if not N.PlatformStand then
+                    hum.PlatformStand = true
+                    N.PlatformStand = true
+                end
+                -- Naikkan speed dan paksa agar tidak tersangkut
+                hum.WalkSpeed = 60 
+                hum.JumpPower = 80
+                hum.HipHeight = 0
+            end)
+        end
     end
 
+    -- Kembalikan ke keadaan semula
     function N.restore()
         for p, v in pairs(N.Saved) do
             pcall(function()
-                if typeof(p) == "Instance" and p.Parent then p.CanCollide = v end
+                if typeof(p) == "Instance" and p.Parent then 
+                    p.CanCollide = v 
+                    p.CanTouch = true
+                end
             end)
         end
         table.clear(N.Saved)
+        N.PlatformStand = false
+
+        local char = LocalPlayer.Character
+        if char then
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            if hum then
+                pcall(function()
+                    hum.PlatformStand = false
+                    hum.WalkSpeed = 16 -- default Roblox
+                    hum.JumpPower = 50
+                    hum.HipHeight = 2
+                end)
+            end
+        end
+    end
+
+    -- Paksa karakter menembus tembok saat ada input arah
+    function N.forceTeleport()
+        if not N.On then return end
+        local char = LocalPlayer.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        
+        if hrp and hum then
+            -- Ambil arah dari AutoInput atau input manual keyboard
+            local moveDir = Vector3.zero
+            if AutoInput.active then
+                if AutoInput.left then moveDir += Vector3.new(-1, 0, 0) end
+                if AutoInput.right then moveDir += Vector3.new(1, 0, 0) end
+                if AutoInput.jump then moveDir += Vector3.new(0, 1, 0) end
+                if AutoInput.down then moveDir += Vector3.new(0, -1, 0) end
+            else
+                -- Deteksi input manual (kalau user pakai keyboard)
+                if UserInputService:IsKeyDown(Enum.KeyCode.A) or UserInputService:IsKeyDown(Enum.KeyCode.Left) then moveDir += Vector3.new(-1, 0, 0) end
+                if UserInputService:IsKeyDown(Enum.KeyCode.D) or UserInputService:IsKeyDown(Enum.KeyCode.Right) then moveDir += Vector3.new(1, 0, 0) end
+                if UserInputService:IsKeyDown(Enum.KeyCode.W) or UserInputService:IsKeyDown(Enum.KeyCode.Space) then moveDir += Vector3.new(0, 1, 0) end
+                if UserInputService:IsKeyDown(Enum.KeyCode.S) then moveDir += Vector3.new(0, -1, 0) end
+            end
+
+            -- Paksa geser posisi (nembus tembok)
+            if moveDir.Magnitude > 0 then
+                local speed = 15
+                -- Note: game ini 2D (samping), jadi kita gerakin X dan Y saja
+                local newPos = hrp.CFrame.Position + Vector3.new(moveDir.X * speed * 0.1, moveDir.Y * speed * 0.1, 0)
+                pcall(function()
+                    hrp.CFrame = CFrame.new(newPos)
+                end)
+            end
+        end
     end
 
     local function bindPartConnections(char)
         for _, c in ipairs(N.PartConns) do pcall(function() c:Disconnect() end) end
         table.clear(N.PartConns)
         if not char then return end
-        -- part baru (mis. aksesoris, tool, part respawn) -> langsung noclip
+        
         table.insert(N.PartConns, char.DescendantAdded:Connect(function(d)
             if N.On and d:IsA("BasePart") then
                 if N.Saved[d] == nil then N.Saved[d] = d.CanCollide end
-                pcall(function() d.CanCollide = false end)
+                pcall(function() d.CanCollide = false; d.CanTouch = false end)
             end
         end))
-        -- Humanoid state: pastikan tidak reset saat jatuh / ragdoll
+        
         local hum = char:FindFirstChildOfClass("Humanoid")
         if hum then
             table.insert(N.PartConns, hum.StateChanged:Connect(function()
@@ -4053,6 +4145,28 @@ do
         N.Saved = {}
         bindCharacter()
         N.Status = "Aktif"
+        
+        -- Loop utama yang sangat cepat (anti-nyangkut)
+        if N.Heartbeat then pcall(function() N.Heartbeat:Disconnect() end) end
+        N.Heartbeat = RunService.Heartbeat:Connect(function()
+            if N.On and alive() then
+                local char = LocalPlayer.Character
+                if char then
+                    local hum = char:FindFirstChildOfClass("Humanoid")
+                    -- Paksa terus-terusan mematikan collision dan platform stand
+                    if hum and not hum.PlatformStand then
+                        hum.PlatformStand = true
+                    end
+                    eachPart(char, function(p)
+                        if p.CanCollide then
+                            if N.Saved[p] == nil then N.Saved[p] = p.CanCollide end
+                            pcall(function() p.CanCollide = false end)
+                        end
+                    end)
+                    N.forceTeleport()
+                end
+            end
+        end)
         return true
     end
 
@@ -4060,6 +4174,7 @@ do
         if not N.On then return true end
         N.On = false
         N.restore()
+        if N.Heartbeat then pcall(function() N.Heartbeat:Disconnect() end) N.Heartbeat = nil end
         for _, c in ipairs(N.PartConns) do pcall(function() c:Disconnect() end) end
         table.clear(N.PartConns)
         if N.Conn then pcall(function() N.Conn:Disconnect() end) N.Conn = nil end
@@ -4072,6 +4187,7 @@ do
         if v then return N.enable() end
         return N.disable()
     end
+end
 
     -- loop ringan: kalau ada part karakter yang collision-nya kembali true (dipaksa game),
     -- set ulang tanpa perlu scan terus-menerus.
