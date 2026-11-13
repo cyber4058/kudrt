@@ -4037,8 +4037,9 @@ do
         pcall(function() ok = connectGame() end)
         local s = playerState()
         N.Loaded = (Refs.World ~= nil and s ~= nil)
+        if N.Loaded then N.bind() end
         if N.Loaded then
-            N.Info = ("World OK, karakter OK (x=%.1f y=%.1f)"):format(s.x, s.y)
+            N.Info = ("World OK, karakter OK (x=%.1f y=%.1f) upvalue x/y=%s/%s"):format(s.x, s.y, tostring(N.ix), tostring(N.iy))
         elseif Refs.World and not s then
             N.Info = "World OK, karakter belum terdeteksi (masuk world dulu)"
         elseif not Refs.World then
@@ -4048,25 +4049,56 @@ do
     end
     N.Info = "Belum dimuat. Tekan Load Data"
 
+    -- Refs.State() hanya mengembalikan SALINAN. Posisi asli = upvalue fungsi tsb.
+    -- Cari indeks upvalue x & y dengan mencocokkan nilai salinan (cocok persis).
+    N.ix, N.iy = nil, nil
+    function N.bind()
+        N.ix, N.iy = nil, nil
+        local s = playerState()
+        if not s or not (debug and debug.getupvalue and debug.setupvalue) then return false end
+        local ix, iy
+        for i = 1, 40 do
+            local ok, v = pcall(debug.getupvalue, Refs.State, i)
+            if not ok then break end
+            if type(v) == "number" then
+                if v == s.x and not ix then ix = i
+                elseif v == s.y and not iy then iy = i end
+            end
+        end
+        if ix and iy then N.ix, N.iy = ix, iy; return true end
+        return false
+    end
+
+    local function getUp(i)
+        local ok, v = pcall(debug.getupvalue, Refs.State, i)
+        return ok and v or nil
+    end
+    local function setUp(i, v)
+        pcall(debug.setupvalue, Refs.State, i, v)
+    end
+
     -- tahan posisi tiap frame (dipanggil dari beberapa event supaya menang atas fisika game)
     function N.hold()
-        if not (N.On and N.px) then return end
-        local s = playerState()
-        if not s then return end
-        s.x, s.y = N.px, N.py
-        s.vx = 0
-        if type(s.vy) == "number" then s.vy = 0 end
-        s.grounded = true
+        if not (N.On and N.px and N.ix) then return end
+        setUp(N.ix, N.px)
+        setUp(N.iy, N.py)
+        -- kecepatan: vx, vy = dua upvalue setelah y
+        if type(getUp(N.iy + 1)) == "number" then setUp(N.iy + 1, 0) end
+        if type(getUp(N.iy + 2)) == "number" then setUp(N.iy + 2, 0) end
     end
 
     function N.step(dt)
-        local s = playerState()
-        if not s then N.Status = "Menunggu state game (tekan Load Data)"; return end
+        if not Refs.State then N.Status = "Menunggu state game (tekan Load Data)"; return end
+        if not N.ix then
+            if not N.bind() then N.Status = "Upvalue posisi tidak ketemu (tekan Load Data)"; return end
+        end
         dt = math.min(dt, 0.1)
+        local cx, cy = getUp(N.ix), getUp(N.iy)
+        if type(cx) ~= "number" or type(cy) ~= "number" then N.ix = nil; return end
 
         -- sinkron kalau game memindahkan kita jauh (teleport / respawn)
-        if not N.px or abs(s.x - N.px) > 3 or abs(s.y - N.py) > 3 then
-            N.px, N.py = s.x, s.y
+        if not N.px or abs(cx - N.px) > 3 or abs(cy - N.py) > 3 then
+            N.px, N.py = cx, cy
         end
 
         local dx, dy = 0, 0
@@ -4083,8 +4115,6 @@ do
             ny = math.clamp(ny, 0.5, (w.h or 60) - 0.5)
         end
         N.px, N.py = nx, ny
-
-        if dx ~= 0 then s.facing = dx end
         N.hold()
         N.Status = "Aktif"
     end
@@ -4095,6 +4125,7 @@ do
         N.On = true
         N.Saved = {}
         N.px, N.py = nil, nil
+        N.bind()
         partsCollide(false)
         N.Status = "Aktif"
         if N.Conn then pcall(function() N.Conn:Disconnect() end) end
@@ -4207,6 +4238,17 @@ do
             add("fungsi dengan grounded+vx ditemukan: " .. found)
         else
             add("getgc / getconstants tidak tersedia di executor ini")
+        end
+        add("bind upvalue x/y: " .. tostring(N.bind()) .. " ix=" .. tostring(N.ix) .. " iy=" .. tostring(N.iy))
+        if N.ix then
+            local x1 = getUp(N.ix)
+            setUp(N.ix, x1 + 0.37)
+            local s3 = playerState()
+            add(("tes upvalue: x sebelum=%.3f, salinan setelah tulis=%.3f"):format(x1, s3 and s3.x or -1))
+            RunService.Heartbeat:Wait()
+            local s4 = playerState()
+            add(("setelah 1 Heartbeat: %.3f"):format(s4 and s4.x or -1))
+            setUp(N.ix, x1)
         end
         add("executor: " .. tostring(identifyexecutor and select(1, identifyexecutor()) or "?"))
         return table.concat(out, "\n")
