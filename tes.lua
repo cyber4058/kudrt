@@ -4037,9 +4037,9 @@ do
         pcall(function() ok = connectGame() end)
         local s = playerState()
         N.Loaded = (Refs.World ~= nil and s ~= nil)
-        if N.Loaded then N.bind() end
+        if N.Loaded then N.bind(); N.findBody() end
         if N.Loaded then
-            N.Info = ("World OK, karakter OK (x=%.1f y=%.1f) upvalue x/y=%s/%s"):format(s.x, s.y, tostring(N.ix), tostring(N.iy))
+            N.Info = ("World OK, karakter OK (x=%.1f y=%.1f) upvalue x/y=%s/%s body=%s"):format(s.x, s.y, tostring(N.ix), tostring(N.iy), tostring(N.body ~= nil))
         elseif Refs.World and not s then
             N.Info = "World OK, karakter belum terdeteksi (masuk world dulu)"
         elseif not Refs.World then
@@ -4077,24 +4077,57 @@ do
         pcall(debug.setupvalue, Refs.State, i, v)
     end
 
+    -- Cari TABEL posisi asli game (bukan salinan): tabel di memori yang x,y,vx,vy-nya persis sama dengan state.
+    N.body = nil
+    function N.findBody()
+        N.body = nil
+        local s = playerState()
+        if not s or not getgc then return false end
+        local cands = {}
+        pcall(function()
+            for _, v in ipairs(getgc(true)) do
+                if type(v) == "table" and v ~= s then
+                    local ok = pcall(function()
+                        if rawget(v, "x") == s.x and rawget(v, "y") == s.y
+                            and type(rawget(v, "vx")) == "number" and type(rawget(v, "vy")) == "number" then
+                            cands[#cands + 1] = v
+                        end
+                    end)
+                end
+            end
+        end)
+        N.Cands = cands
+        if #cands > 0 then N.body = cands[1]; return true end
+        return false
+    end
+
     -- tahan posisi tiap frame (dipanggil dari beberapa event supaya menang atas fisika game)
     function N.hold()
-        if not (N.On and N.px and N.ix) then return end
-        setUp(N.ix, N.px)
-        setUp(N.iy, N.py)
-        -- kecepatan: vx, vy = dua upvalue setelah y
-        if type(getUp(N.iy + 1)) == "number" then setUp(N.iy + 1, 0) end
-        if type(getUp(N.iy + 2)) == "number" then setUp(N.iy + 2, 0) end
+        if not (N.On and N.px) then return end
+        local b = N.body
+        if b then
+            pcall(function()
+                b.x, b.y = N.px, N.py
+                b.vx, b.vy = 0, 0
+            end)
+        end
+        if N.ix then
+            setUp(N.ix, N.px)
+            setUp(N.iy, N.py)
+            if type(getUp(N.iy + 1)) == "number" then setUp(N.iy + 1, 0) end
+            if type(getUp(N.iy + 2)) == "number" then setUp(N.iy + 2, 0) end
+        end
     end
 
     function N.step(dt)
         if not Refs.State then N.Status = "Menunggu state game (tekan Load Data)"; return end
-        if not N.ix then
-            if not N.bind() then N.Status = "Upvalue posisi tidak ketemu (tekan Load Data)"; return end
-        end
+        if not N.ix then N.bind() end
+        if not N.body and not N.ix then N.findBody() end
+        if not N.body and not N.ix then N.Status = "Posisi asli tidak ketemu (tekan Load Data)"; return end
         dt = math.min(dt, 0.1)
-        local cx, cy = getUp(N.ix), getUp(N.iy)
-        if type(cx) ~= "number" or type(cy) ~= "number" then N.ix = nil; return end
+        local cx, cy
+        if N.body then cx, cy = N.body.x, N.body.y else cx, cy = getUp(N.ix), getUp(N.iy) end
+        if type(cx) ~= "number" or type(cy) ~= "number" then N.body = nil; N.ix = nil; return end
 
         -- sinkron kalau game memindahkan kita jauh (teleport / respawn)
         if not N.px or abs(cx - N.px) > 3 or abs(cy - N.py) > 3 then
@@ -4126,6 +4159,7 @@ do
         N.Saved = {}
         N.px, N.py = nil, nil
         N.bind()
+        N.findBody()
         partsCollide(false)
         N.Status = "Aktif"
         if N.Conn then pcall(function() N.Conn:Disconnect() end) end
@@ -4249,6 +4283,49 @@ do
             local s4 = playerState()
             add(("setelah 1 Heartbeat: %.3f"):format(s4 and s4.x or -1))
             setUp(N.ix, x1)
+        end
+        add("cari tabel posisi asli: " .. tostring(N.findBody()) .. " kandidat=" .. tostring(N.Cands and #N.Cands or 0))
+        for i, c in ipairs(N.Cands or {}) do
+            if i > 4 then break end
+            local ks = {}
+            pcall(function() for k, v in pairs(c) do ks[#ks + 1] = tostring(k) .. "=" .. (type(v) == "number" and tostring(v) or typeof(v)) end end)
+            table.sort(ks)
+            add("  tabel #" .. i .. ": " .. table.concat(ks, ", "))
+        end
+        if N.body then
+            local bx = N.body.x
+            pcall(function() N.body.x = bx + 0.37 end)
+            local sa = playerState()
+            add(("tes tulis body.x: salinan state sesudah=%.3f (asli %.3f)"):format(sa and sa.x or -1, bx))
+            RunService.Heartbeat:Wait()
+            add(("setelah 1 Heartbeat body.x=%.3f"):format(N.body.x))
+            pcall(function() N.body.x = bx end)
+        end
+        -- fungsi game yang menyimpan x/y persis sama di upvalue-nya
+        if getgc and debug and debug.getupvalues then
+            local cnt = 0
+            pcall(function()
+                for _, f in ipairs(getgc(true)) do
+                    if cnt < 8 and type(f) == "function" and f ~= Refs.State and (not islclosure or islclosure(f))
+                        and not (isexecutorclosure and isexecutorclosure(f)) then
+                        local ok, ups = pcall(debug.getupvalues, f)
+                        if ok and type(ups) == "table" then
+                            local hx, hy = nil, nil
+                            for i, v in pairs(ups) do
+                                if type(v) == "number" and v == s.x then hx = i end
+                                if type(v) == "number" and v == s.y then hy = i end
+                            end
+                            if hx and hy then
+                                cnt += 1
+                                local c = {}
+                                pcall(function() for _, k in pairs(getconsts(f)) do if type(k) == "string" and #c < 25 then c[#c + 1] = k end end end)
+                                add(("fungsi pemegang x/y #%d: upvalue x=%s y=%s const=[%s]"):format(cnt, tostring(hx), tostring(hy), table.concat(c, ",")))
+                            end
+                        end
+                    end
+                end
+            end)
+            add("fungsi pemegang x/y: " .. cnt)
         end
         add("executor: " .. tostring(identifyexecutor and select(1, identifyexecutor()) or "?"))
         return table.concat(out, "\n")
