@@ -1094,6 +1094,7 @@ local function isDownWrapper(saved, key, ...)
         Misc.lastDownT = Misc.lastDownT or {}
         Misc.lastDown[key] = r and true or false
         Misc.lastDownT[key] = os.clock()
+        Misc.downCalls = (Misc.downCalls or 0) + 1
     end
     return r
 end
@@ -4497,6 +4498,50 @@ do
         return table.concat(out, "\n")
     end
 
+
+    -- TES TOMBOL TERPANDU: 3 fase x 2 detik (kanan, kiri, lompat) dengan aba-aba di layar
+    function N.keyTest()
+        local out = {}
+        local function add(s) out[#out + 1] = s end
+        add("== TES TOMBOL ==")
+        add("hook isDown terpasang: " .. tostring(MenuModule and MenuModule.isDown == isDownWrapper))
+        if getconsts and OrigIsDown then
+            local c = {}
+            pcall(function() for _, k in pairs(getconsts(OrigIsDown)) do if #c < 30 then c[#c + 1] = tostring(k) end end end)
+            add("const isDown asli: [" .. table.concat(c, ",") .. "]")
+        end
+        if type(MenuModule) == "table" then
+            local ks = {}
+            pcall(function() for k, v in pairs(MenuModule) do if #ks < 60 then ks[#ks + 1] = tostring(k) .. ":" .. typeof(v) end end end)
+            table.sort(ks)
+            add("isi MenuModule: " .. table.concat(ks, ", "))
+        end
+        local phases = { { "KANAN", "keyRight" }, { "KIRI", "keyLeft" }, { "LOMPAT", "keyJump" } }
+        for _, ph in ipairs(phases) do
+            if Misc.toast then pcall(Misc.toast, "TAHAN " .. ph[1] .. " SEKARANG (2 detik)") end
+            local cnt = { keyLeft = 0, keyRight = 0, keyJump = 0, keyDown = 0 }
+            local calls0 = Misc.downCalls or 0
+            local maxvx, minvy = 0, 0
+            local t0 = os.clock()
+            while os.clock() - t0 < 2 do
+                for k in pairs(cnt) do
+                    local ok, r = pcall(N.keyDown, k)
+                    if ok and r then cnt[k] += 1 end
+                end
+                local s = playerState()
+                if s then
+                    if math.abs(s.vx or 0) > math.abs(maxvx) then maxvx = s.vx end
+                    if (s.vy or 0) < minvy then minvy = s.vy end
+                end
+                task.wait(0.1)
+            end
+            add(("fase %s: kiri=%d kanan=%d lompat=%d bawah=%d | panggilan isDown dari game=%d | vx maks=%.2f vy min=%.2f"):format(
+                ph[1], cnt.keyLeft, cnt.keyRight, cnt.keyJump, cnt.keyDown, (Misc.downCalls or 0) - calls0, maxvx, minvy))
+            task.wait(0.3)
+        end
+        return table.concat(out, "\n")
+    end
+
     function N.toggle(v)
         if v == nil then v = not N.On end
         if v then return N.enable() end
@@ -5572,6 +5617,18 @@ diagN.MouseButton1Click:Connect(function()
         local copied = pcall(function() setclipboard(text) end)
         print(text)
         toast(copied and "Diagnosa disalin ke clipboard" or "Diagnosa dicetak di console (F9)")
+    end)
+end)
+
+local keyBtn = button(cLoad, "Tes Tombol (6 detik, ikuti aba-aba)", { Size = UDim2.new(1, 0, 0, 38) })
+keyBtn.MouseButton1Click:Connect(function()
+    task.spawn(function()
+        local ok, text = pcall(N.keyTest)
+        if not ok then toast("Tes tombol gagal: " .. tostring(text)) return end
+        pcall(function() writefile("knear_key_test.txt", text) end)
+        local copied = pcall(function() setclipboard(text) end)
+        print(text)
+        toast(copied and "Hasil tes tombol disalin ke clipboard" or "Hasil dicetak di console (F9)")
     end)
 end)
 
