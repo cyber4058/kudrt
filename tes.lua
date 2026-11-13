@@ -1125,8 +1125,8 @@ local P = {
     Running = false, RunId = 0,
     BlockId = nil,
     HomeX = nil, HomeY = nil,          -- posisi berdiri saat PNB (tile)
-    DL = true, DR = true, Up = false, UL = false, UR = false,
-    -- arah break: bawah kiri/kanan dan tiga tile di atas (kiri/tengah/kanan)
+    Mode = "up", -- left = 3 tile kiri, right = 3 tile kanan, up = 3 tile di atas
+    DL = false, DR = false, Up = true, UL = false, UR = false, -- kompatibilitas UI lama
     SkipTile = {}, Stubborn = {},       -- tile / item yang dilewati sementara (hasil cross check)
     PunchMs = 120,
     Collect = true,                    -- cadangan: jalan ke item yang tidak terjangkau remote
@@ -1424,13 +1424,25 @@ local function pnbTile(run, tx, ty, name)
 end
 
 local function targetList()
-    local t = {}
-    if P.DL then t[#t + 1] = { dx = -1, dy = 1, name = "bawah-kiri" } end
-    if P.DR then t[#t + 1] = { dx = 1, dy = 1, name = "bawah-kanan" } end
-    if P.UL then t[#t + 1] = { dx = -1, dy = -1, name = "atas-kiri" } end
-    if P.Up then t[#t + 1] = { dx = 0, dy = -1, name = "atas-tengah" } end
-    if P.UR then t[#t + 1] = { dx = 1, dy = -1, name = "atas-kanan" } end
-    return t
+    -- Selalu proses satu tile per satu tile; collect/cross-check selesai sebelum tile berikutnya.
+    if P.Mode == "left" then
+        return {
+            { dx = -1, dy = -1, name = "kiri-atas" },
+            { dx = -1, dy = 0, name = "kiri-tengah" },
+            { dx = -1, dy = 1, name = "kiri-bawah" },
+        }
+    elseif P.Mode == "right" then
+        return {
+            { dx = 1, dy = -1, name = "kanan-atas" },
+            { dx = 1, dy = 0, name = "kanan-tengah" },
+            { dx = 1, dy = 1, name = "kanan-bawah" },
+        }
+    end
+    return {
+        { dx = -1, dy = -1, name = "atas-kiri" },
+        { dx = 0, dy = -1, name = "atas-tengah" },
+        { dx = 1, dy = -1, name = "atas-kanan" },
+    }
 end
 
 ---------------------------------------------------------------------
@@ -1614,7 +1626,7 @@ function P.start()
     if P.Running then return true end
     if not gameReady() then return false, "Belum terhubung ke game. Tekan Hubungkan." end
     if not P.BlockId then return false, "Pilih block dulu" end
-    if not (P.DL or P.DR or P.Up or P.UL or P.UR) then return false, "Pilih minimal satu arah break" end
+    if P.Mode ~= "left" and P.Mode ~= "right" and P.Mode ~= "up" then return false, "Pilih mode arah break" end
     local px, py = getPlayerTile()
     if not px then return false, "Karakter tidak ditemukan (belum masuk world?)" end
     if not P.HomeX then P.HomeX, P.HomeY = px, py end
@@ -3620,7 +3632,7 @@ do
         if not F.BlockId then return false, "Pilih block PNB dulu" end
         if not F.SeedId then return false, "Pilih seed dulu" end
         if not F.BaseId then return false, "Pilih blok tempat menanam dulu" end
-        if not (P.DL or P.DR or P.Up or P.UL or P.UR) then return false, "Pilih minimal satu arah break" end
+        if P.Mode ~= "left" and P.Mode ~= "right" and P.Mode ~= "up" then return false, "Pilih mode arah break" end
         if not Refs.Punch then return false, "Fungsi pukul game belum ketemu. Tekan Hubungkan." end
         if F.DropAt > 0 and not F.DropX then return false, "Atur posisi drop dulu (atau set batas drop = 0)" end
         local px, py = getPlayerTile()
@@ -4266,6 +4278,48 @@ menuItem("plant", "AUTO PLANT")
 menuItem("factory", "FACTORY")
 menuItem("sefty", "SEFTY AUTO")
 menuItem("info", "Info")
+local function addBreakModeSelector(parent)
+    label(parent, { Size = UDim2.new(1, 0, 0, 20), Text = "MODE ARAH BREAK  (x = block, P = karakter)", Font = FM, TextSize = 13 })
+    local preview = label(parent, { Size = UDim2.new(1, 0, 0, 76), Text = "", Font = Enum.Font.Code, TextSize = 17,
+        TextColor3 = C.accent, TextXAlignment = Enum.TextXAlignment.Center, TextYAlignment = Enum.TextYAlignment.Center })
+    local row = mk("Frame", { Size = UDim2.new(1, 0, 0, 38), BackgroundTransparency = 1 }, parent)
+    list(row, 7, Enum.FillDirection.Horizontal)
+    local modes = {
+        { id = "left", text = "← Kiri" },
+        { id = "right", text = "Kanan →" },
+        { id = "up", text = "↑ Atas" },
+    }
+    local buttons = {}
+    local function refresh()
+        if P.Mode == "left" then
+            preview.Text = "x\nx P\nx"
+        elseif P.Mode == "right" then
+            preview.Text = "    x\nP x\n    x"
+        else
+            preview.Text = "x   x   x\n    P"
+        end
+        for _, item in ipairs(modes) do
+            local b = buttons[item.id]
+            local active = P.Mode == item.id
+            b.BackgroundColor3 = active and C.accentSoft or C.field
+            b.TextColor3 = active and C.accent or C.text
+            b.Font = active and FB or FM
+        end
+    end
+    for _, item in ipairs(modes) do
+        local b = button(row, item.text, { Size = UDim2.new(1/3, -5, 1, 0), TextSize = 12 }, false)
+        buttons[item.id] = b
+        b.MouseButton1Click:Connect(function()
+            P.Mode = item.id
+            -- Reset flag kompatibilitas agar tidak ada mode campuran dari pengaturan lama.
+            P.DL, P.DR, P.UL, P.UR, P.Up = false, false, false, false, item.id == "up"
+            refresh()
+        end)
+    end
+    refresh()
+    return refresh
+end
+
 local PagePNB = newPage("pnb")
 local PageH = newPage("harvest")
 local PageA = newPage("plant")
@@ -4395,27 +4449,7 @@ xyBtn.MouseButton1Click:Connect(function()
     toast(("Posisi break: %s,%s"):format(a, b))
 end)
 
-label(cPos, { Size = UDim2.new(1, 0, 0, 20), Text = "Arah break  (x = block, P = karakter)", Font = FM, TextSize = 13 })
-local preview = label(cPos, { Size = UDim2.new(1, 0, 0, 78), Text = "", Font = Enum.Font.Code, TextSize = 16,
-    TextColor3 = C.accent, TextXAlignment = Enum.TextXAlignment.Center, TextYAlignment = Enum.TextYAlignment.Center })
-local function updatePreview()
-    local ul = P.UL and "x" or "."
-    local u = P.Up and "x" or "."
-    local ur = P.UR and "x" or "."
-    local dl = P.DL and "x" or "."
-    local dr = P.DR and "x" or "."
-    preview.Text = ("%s%s%s\n P "):format(ul, u, ur) .. "\n" .. dl .. "   " .. dr
-end
-local dirRowTop = mk("Frame", { Size = UDim2.new(1, 0, 0, 28), BackgroundTransparency = 1 }, cPos)
-list(dirRowTop, 6, Enum.FillDirection.Horizontal)
-checkbox(dirRowTop, "Atas kiri", nil, P.UL, function(v) P.UL = v updatePreview() end, 0.34)
-checkbox(dirRowTop, "Atas tengah", nil, P.Up, function(v) P.Up = v updatePreview() end, 0.33)
-checkbox(dirRowTop, "Atas kanan", nil, P.UR, function(v) P.UR = v updatePreview() end, 0.33)
-local dirRowBottom = mk("Frame", { Size = UDim2.new(1, 0, 0, 28), BackgroundTransparency = 1 }, cPos)
-list(dirRowBottom, 6, Enum.FillDirection.Horizontal)
-checkbox(dirRowBottom, "Bawah kiri", nil, P.DL, function(v) P.DL = v updatePreview() end, 0.5)
-checkbox(dirRowBottom, "Bawah kanan", nil, P.DR, function(v) P.DR = v updatePreview() end, 0.5)
-updatePreview()
+local updateBreakMode = addBreakModeSelector(cPos)
 
 -- 4) Pengaturan
 local cSet = card(PagePNB, "Pengaturan")
@@ -4876,21 +4910,7 @@ end
 -- 4) Posisi PNB + arah break
 local cPnb, updPnb = posCard("Posisi PNB", "Tempat karakter berdiri saat PNB", "Belum ditentukan (otomatis posisi saat mulai)",
     "Posisi PNB", function() return F.PnbX, F.PnbY end, function(x, y) F.PnbX, F.PnbY = x, y end)
-label(cPnb, { Size = UDim2.new(1, 0, 0, 20), Text = "Arah break  (x = block, P = karakter)", Font = FM, TextSize = 13 })
-local pv = label(cPnb, { Size = UDim2.new(1, 0, 0, 78), Text = "", Font = Enum.Font.Code, TextSize = 16,
-    TextColor3 = C.accent, TextXAlignment = Enum.TextXAlignment.Center, TextYAlignment = Enum.TextYAlignment.Center })
-local function updPv()
-    pv.Text = ("%s%s%s\n P \n%s %s"):format(P.UL and "x" or ".", P.Up and "x" or ".", P.UR and "x" or ".", P.DL and "x" or ".", P.DR and "x" or ".")
-end
-local dirRowTop = mk("Frame", { Size = UDim2.new(1, 0, 0, 28), BackgroundTransparency = 1 }, cPnb)
-list(dirRowTop, 6, Enum.FillDirection.Horizontal)
-checkbox(dirRowTop, "Atas kiri", nil, P.UL, function(v) P.UL = v updPv() end, 0.34)
-checkbox(dirRowTop, "Atas tengah", nil, P.Up, function(v) P.Up = v updPv() end, 0.33)
-checkbox(dirRowTop, "Atas kanan", nil, P.UR, function(v) P.UR = v updPv() end, 0.33)
-local dirRowBottom = mk("Frame", { Size = UDim2.new(1, 0, 0, 28), BackgroundTransparency = 1 }, cPnb)
-list(dirRowBottom, 6, Enum.FillDirection.Horizontal)
-checkbox(dirRowBottom, "Bawah kiri", nil, P.DL, function(v) P.DL = v updPv() end, 0.5)
-checkbox(dirRowBottom, "Bawah kanan", nil, P.DR, function(v) P.DR = v updPv() end, 0.5)
+local updFactoryBreakMode = addBreakModeSelector(cPnb)
 
 -- 5) Posisi drop + batas
 local cDrop, updDrop = posCard("Posisi drop seed", "Tempat karakter berdiri saat menjatuhkan seed (jauhkan dari area tanam & PNB)",
@@ -5027,7 +5047,7 @@ end
 ---------------------------------------------------------------------
 local cAbout = card(PageInfo, "K NEAR", "PNB  |  HARVEST  |  AUTO PLANT  |  FACTORY  |  SEFTY AUTO")
 label(cAbout, { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, TextWrapped = true, TextSize = 13, TextColor3 = C.sub,
-    Text = "PNB: put & break otomatis.\nHARVEST: panen tanaman yang sudah siap.\nAUTO PLANT: tanam seed di atas blok pilihan, otomatis mencari blok.\nFACTORY: PNB sampai block habis, lalu tanam sambil panen, ulang lagi. Seed berlebih bisa di-drop otomatis.\nSEFTY AUTO: keluar world kalau ada Mod (diam < 5 detik dulu) dan otomatis masuk lagi ke world tujuan.\n\nHanya satu fitur berjalan dalam satu waktu. Menyalakan fitur lain menghentikan yang sedang berjalan." })
+    Text = "PNB: put & break otomatis dengan 3 mode pola kiri, kanan, atau atas (3 tile berurutan).\nHARVEST: panen tanaman yang sudah siap.\nAUTO PLANT: tanam seed di atas blok pilihan, otomatis mencari blok.\nFACTORY: PNB sampai block habis, lalu tanam sambil panen, ulang lagi. Seed berlebih bisa di-drop otomatis.\nSEFTY AUTO: keluar world kalau ada Mod (diam < 5 detik dulu) dan otomatis masuk lagi ke world tujuan.\n\nHanya satu fitur berjalan dalam satu waktu. Menyalakan fitur lain menghentikan yang sedang berjalan." })
 local cDc = card(PageInfo, "Komunitas")
 label(cDc, { Size = UDim2.new(1, 0, 0, 18), Text = DISCORD_URL, TextSize = 13, TextColor3 = C.accent, Font = FM })
 local copyDc = button(cDc, "Salin link Discord", { Size = UDim2.new(1, 0, 0, 38) }, true)
@@ -5039,18 +5059,18 @@ copyDc.MouseButton1Click:Connect(copyDiscord)
 DcBtn.MouseButton1Click:Connect(copyDiscord)
 local cKey = card(PageInfo, "Tombol")
 label(cKey, { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, TextWrapped = true, TextSize = 13, TextColor3 = C.sub,
-    Text = "RightShift = sembunyikan / tampilkan menu.\nTombol - = kecilkan menu jadi logo." })
+    Text = "RightShift = sembunyikan / tampilkan menu.\nTombol - = kecilkan menu jadi logo mengambang (bisa digeser).\nTarik sudut kanan-bawah untuk mengubah ukuran GUI." })
 
 showPage("pnb")
 
 ---------------------------------------------------------------------
 -- Minimize / close / drag / tombol RightShift
 ---------------------------------------------------------------------
-local Mini = mk("ImageButton", { Size = UDim2.fromOffset(48, 48), Position = UDim2.fromOffset(16, 120), BackgroundColor3 = C.bg,
+local Mini = mk("ImageButton", { Size = UDim2.fromOffset(56, 56), Position = UDim2.fromOffset(16, 120), BackgroundColor3 = C.bg,
     BorderSizePixel = 0, Visible = false, AutoButtonColor = false, Image = "", ScaleType = Enum.ScaleType.Crop }, Gui)
 corner(Mini, 14)
 stroke(Mini, C.line, 1)
-local MiniText = label(Mini, { Size = UDim2.fromScale(1, 1), Text = "K", Font = FB, TextSize = 20, TextColor3 = C.accent, TextXAlignment = Enum.TextXAlignment.Center })
+local MiniText = label(Mini, { Size = UDim2.fromScale(1, 1), Text = "K", Font = FB, TextSize = 22, TextColor3 = C.accent, TextXAlignment = Enum.TextXAlignment.Center })
 
 local function setHidden(hide)
     Main.Visible = not hide
@@ -5058,7 +5078,24 @@ local function setHidden(hide)
     Mini.Visible = hide
 end
 MinBtn.MouseButton1Click:Connect(function() setHidden(true) end)
-Mini.MouseButton1Click:Connect(function() setHidden(false) end)
+local miniDragging, miniMoved, miniStart, miniPos = false, false, nil, nil
+Mini.InputBegan:Connect(function(i)
+    if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+        miniDragging, miniMoved, miniStart, miniPos = true, false, i.Position, Mini.Position
+        i.Changed:Connect(function() if i.UserInputState == Enum.UserInputState.End then miniDragging = false end end)
+    end
+end)
+table.insert(Connections, UserInputService.InputChanged:Connect(function(i)
+    if miniDragging and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
+        local d = i.Position - miniStart
+        if math.abs(d.X) + math.abs(d.Y) > 6 then miniMoved = true end
+        Mini.Position = UDim2.new(miniPos.X.Scale, miniPos.X.Offset + d.X, miniPos.Y.Scale, miniPos.Y.Offset + d.Y)
+    end
+end))
+Mini.MouseButton1Click:Connect(function()
+    if not miniMoved then setHidden(false) end
+    miniMoved = false
+end)
 
 table.insert(Connections, UserInputService.InputBegan:Connect(function(input, gp)
     if gp then return end
@@ -5084,6 +5121,30 @@ do
         end
     end))
 end
+
+-- Resize handle: tarik sudut kanan-bawah untuk memperbesar / memperkecil GUI.
+local ResizeHandle = mk("TextButton", { Name = "ResizeHandle", Size = UDim2.fromOffset(22, 22),
+    AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -5, 1, -5),
+    BackgroundColor3 = C.accentSoft, Text = "◢", TextColor3 = C.accent, TextSize = 13,
+    Font = FB, AutoButtonColor = false, BorderSizePixel = 0, ZIndex = 20 }, Main)
+corner(ResizeHandle, 7)
+local resizing, resizeStart, sizeStart = false, nil, nil
+ResizeHandle.InputBegan:Connect(function(i)
+    if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+        resizing, resizeStart, sizeStart = true, i.Position, Main.AbsoluteSize
+        i.Changed:Connect(function() if i.UserInputState == Enum.UserInputState.End then resizing = false end end)
+    end
+end)
+table.insert(Connections, UserInputService.InputChanged:Connect(function(i)
+    if resizing and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
+        local d = i.Position - resizeStart
+        local view = (workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize) or Vector2.new(900, 600)
+        local w = math.clamp(sizeStart.X + d.X, 360, math.max(360, view.X - 20))
+        local h = math.clamp(sizeStart.Y + d.Y, 300, math.max(300, view.Y - 20))
+        Main.Size = UDim2.fromOffset(w, h)
+        Shadow.Size = UDim2.fromOffset(w + 10, h + 10)
+    end
+end))
 
 -- Logo dari URL (diunduh di thread terpisah supaya GUI tidak menunggu)
 task.spawn(function()
