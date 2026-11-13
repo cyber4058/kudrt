@@ -4141,7 +4141,15 @@ do
                                     end
                                 end
                             end
-                            if ix and iy then N.cf, N.cx, N.cy = f, ix, iy; return end
+                            if ix and iy then
+                                N.cf, N.cx, N.cy = f, ix, iy
+                                N.cxs, N.cys = {}, {}
+                                for i = math.max(1, ix - 2), math.min(#vals, ix + 8) do
+                                    if vals[i] == s.x then N.cxs[#N.cxs + 1] = i end
+                                    if vals[i] == s.y then N.cys[#N.cys + 1] = i end
+                                end
+                                return
+                            end
                         end
                     end
                 end
@@ -4162,8 +4170,9 @@ do
     function N.hold()
         if not (N.On and N.px) then return end
         if N.cf then
-            cset(N.cx, N.px)
-            cset(N.cy, N.py)
+            -- tulis ke SEMUA upvalue yang menyimpan x / y (posisi sekarang + salinan frame sebelumnya)
+            for _, i in ipairs(N.cxs or { N.cx }) do cset(i, N.px) end
+            for _, i in ipairs(N.cys or { N.cy }) do cset(i, N.py) end
         end
         local b = N.body
         if b then pcall(function() b.x, b.y = N.px, N.py; b.vx, b.vy = 0, 0 end) end
@@ -4346,14 +4355,15 @@ do
             for i = N.cx - 1, N.cy + 4 do ups[#ups + 1] = i .. "=" .. tostring(cget(i)) end
             add("upvalue sekitar x/y pengendali: " .. table.concat(ups, ", "))
             local x1 = cget(N.cx)
-            cset(N.cx, x1 + 0.6)
+            add("indeks x ditulis: " .. table.concat(N.cxs or {}, ",") .. "  indeks y ditulis: " .. table.concat(N.cys or {}, ","))
+            for _, i in ipairs(N.cxs or { N.cx }) do cset(i, x1 + 0.6) end
             RunService.Heartbeat:Wait()
             local x2 = cget(N.cx)
             local sn = playerState()
             add(("tes pengendali: x awal=%.3f, setelah tulis+1 frame=%.3f, salinan state=%.3f"):format(x1, x2, sn and sn.x or -1))
             RunService.Heartbeat:Wait()
             add(("2 frame: x=%.3f"):format(cget(N.cx)))
-            cset(N.cx, x1)
+            for _, i in ipairs(N.cxs or { N.cx }) do cset(i, x1) end
         end
         -- fungsi teleport milik game
         if getgc then
