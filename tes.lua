@@ -4433,6 +4433,34 @@ do
             end)
             add("fungsi pemegang x/y: " .. cnt)
         end
+        -- TES JALAN OTOMATIS: noclip ke kanan 1 detik tanpa sentuhan, catat posisi tiap 0.1 detik
+        if not N.On then
+            local sx = playerState()
+            if sx then
+                local x0, y0 = sx.x, sx.y
+                add(("TES JALAN: mulai x=%.3f y=%.3f"):format(x0, y0))
+                N.enable()
+                AutoInput.active, AutoInput.right = true, true
+                local rows = {}
+                for i = 1, 10 do
+                    task.wait(0.1)
+                    local g = playerState()
+                    rows[#rows + 1] = ("t=%.1f target=%.2f ctl=%s state=%.2f"):format(i * 0.1, N.px or -1,
+                        N.cf and tostring(cget(N.cx)) or "-", g and g.x or -1)
+                end
+                AutoInput.right = false
+                AutoInput.active = false
+                add("status: " .. tostring(N.Status))
+                for _, r in ipairs(rows) do add("  " .. r) end
+                -- kembalikan ke posisi awal supaya tidak terjebak di dalam blok
+                N.px, N.py = x0, y0
+                task.wait(0.3)
+                N.disable()
+                add("TES JALAN selesai (posisi dikembalikan ke awal)")
+            end
+        else
+            add("noclip sedang aktif, status: " .. tostring(N.Status))
+        end
         add("executor: " .. tostring(identifyexecutor and select(1, identifyexecutor()) or "?"))
         return table.concat(out, "\n")
     end
