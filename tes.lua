@@ -3968,204 +3968,118 @@ do
 end
 
 ---------------------------------------------------------------------
--- VISUAL: NOCLIP (VERSI AGRESIF)
---   1. Mematikan CanCollide semua part.
---   2. Menghapus Weld/WeldConstraint (kadang game nge-weld karakter).
---   3. Mengakali Humanoid (PlatformStand) dan memaksa posisi (Teleport).
---   4. Dipasang ulang secara instan kalau game mencoba me-reset fisika.
+-- VISUAL: NOCLIP (STATE GAME)
+--   Game ini menghitung posisi + tabrakan dari state internal (x, y, vx, tile solid),
+--   bukan dari fisika Roblox. Jadi noclip menggeser state game langsung:
+--   1. Tiap frame baca tombol kiri / kanan / lompat / bawah (keyboard + tombol layar).
+--   2. Posisi (s.x, s.y) digeser sendiri tanpa cek tile solid.
+--   3. Kecepatan game (vx, vy) di-nol-kan supaya fisika game tidak menarik balik.
+--   4. CanCollide part karakter ikut dimatikan sebagai tambahan.
 ---------------------------------------------------------------------
 local N = {
     On = false,
     Saved = {},
     Conn = nil,
-    PartConns = {},
     Status = "Mati",
-    Heartbeat = nil,
-    PlatformStand = false,
+    Speed = 9,                  -- tile / detik
+    px = nil, py = nil,         -- posisi yang dipegang noclip
 }
 
 do
-    local function eachPart(char, fn)
-        if not char then return end
+    local function keyDown(key, kc1, kc2)
+        local down = false
         pcall(function()
-            for _, d in ipairs(char:GetDescendants()) do
-                if d:IsA("BasePart") then fn(d) end
+            if type(MenuModule) == "table" and type(MenuModule.isDown) == "function" then
+                down = MenuModule.isDown(MenuModule, key) and true or false
             end
         end)
+        if down then return true end
+        if AutoInput.active then
+            if key == "keyLeft" then return AutoInput.left end
+            if key == "keyRight" then return AutoInput.right end
+            if key == "keyJump" then return AutoInput.jump end
+            if key == "keyDown" then return AutoInput.down end
+        end
+        local ok, r = pcall(function()
+            return UserInputService:IsKeyDown(kc1) or (kc2 and UserInputService:IsKeyDown(kc2))
+        end)
+        return ok and r or false
     end
 
-    -- Terapkan noclip ke satu karakter
-    function N.apply(char)
+    local function partsCollide(on)
+        local char = LocalPlayer.Character
         if not char then return end
-        
-        -- 1. Matikan collision semua part
-        eachPart(char, function(p)
-            if N.Saved[p] == nil then
-                N.Saved[p] = p.CanCollide
-            end
-            pcall(function() 
-                p.CanCollide = false 
-                p.CanTouch = false
-            end)
-        end)
-
-        -- 2. Hapus semua Weld / WeldConstraint yang menempel ke karakter (kadang game mengunci karakter di tile)
         pcall(function()
             for _, d in ipairs(char:GetDescendants()) do
-                if d:IsA("Weld") or d:IsA("WeldConstraint") or d:IsA("Motor6D") then
-                    -- Hati-hati jangan hapus Motor6D yang menggambar sendi (biar animasi tetap jalan)
-                    if d:IsA("Weld") or d:IsA("WeldConstraint") then
-                        -- hanya hapus weld yang nyambung ke part luar karakter
-                        if d.Part0 and d.Part0:IsDescendantOf(char) and d.Part1 and d.Part1:IsDescendantOf(workspace) and not d.Part1:IsDescendantOf(char) then
-                            d:Destroy()
-                        end
+                if d:IsA("BasePart") then
+                    if not on then
+                        if N.Saved[d] == nil then N.Saved[d] = d.CanCollide end
+                        d.CanCollide = false
                     end
                 end
             end
         end)
-
-        -- 3. Akali Humanoid
-        local hum = char:FindFirstChildOfClass("Humanoid")
-        if hum then
-            pcall(function()
-                if not N.PlatformStand then
-                    hum.PlatformStand = true
-                    N.PlatformStand = true
-                end
-                -- Naikkan speed dan paksa agar tidak tersangkut
-                hum.WalkSpeed = 60 
-                hum.JumpPower = 80
-                hum.HipHeight = 0
-            end)
-        end
     end
 
-    -- Kembalikan ke keadaan semula
     function N.restore()
         for p, v in pairs(N.Saved) do
             pcall(function()
-                if typeof(p) == "Instance" and p.Parent then 
-                    p.CanCollide = v 
-                    p.CanTouch = true
-                end
+                if typeof(p) == "Instance" and p.Parent then p.CanCollide = v end
             end)
         end
         table.clear(N.Saved)
-        N.PlatformStand = false
-
-        local char = LocalPlayer.Character
-        if char then
-            local hum = char:FindFirstChildOfClass("Humanoid")
-            if hum then
-                pcall(function()
-                    hum.PlatformStand = false
-                    hum.WalkSpeed = 16 -- default Roblox
-                    hum.JumpPower = 50
-                    hum.HipHeight = 2
-                end)
-            end
-        end
     end
 
-    -- Paksa karakter menembus tembok saat ada input arah
-    function N.forceTeleport()
-        if not N.On then return end
-        local char = LocalPlayer.Character
-        local hrp = char and char:FindFirstChild("HumanoidRootPart")
-        local hum = char and char:FindFirstChildOfClass("Humanoid")
-        
-        if hrp and hum then
-            -- Ambil arah dari AutoInput atau input manual keyboard
-            local moveDir = Vector3.zero
-            if AutoInput.active then
-                if AutoInput.left then moveDir += Vector3.new(-1, 0, 0) end
-                if AutoInput.right then moveDir += Vector3.new(1, 0, 0) end
-                if AutoInput.jump then moveDir += Vector3.new(0, 1, 0) end
-                if AutoInput.down then moveDir += Vector3.new(0, -1, 0) end
-            else
-                -- Deteksi input manual (kalau user pakai keyboard)
-                if UserInputService:IsKeyDown(Enum.KeyCode.A) or UserInputService:IsKeyDown(Enum.KeyCode.Left) then moveDir += Vector3.new(-1, 0, 0) end
-                if UserInputService:IsKeyDown(Enum.KeyCode.D) or UserInputService:IsKeyDown(Enum.KeyCode.Right) then moveDir += Vector3.new(1, 0, 0) end
-                if UserInputService:IsKeyDown(Enum.KeyCode.W) or UserInputService:IsKeyDown(Enum.KeyCode.Space) then moveDir += Vector3.new(0, 1, 0) end
-                if UserInputService:IsKeyDown(Enum.KeyCode.S) then moveDir += Vector3.new(0, -1, 0) end
-            end
+    function N.step(dt)
+        local s = playerState()
+        if not s then N.Status = "Menunggu state game"; return end
+        dt = math.min(dt, 0.1)
 
-            -- Paksa geser posisi (nembus tembok)
-            if moveDir.Magnitude > 0 then
-                local speed = 15
-                -- Note: game ini 2D (samping), jadi kita gerakin X dan Y saja
-                local newPos = hrp.CFrame.Position + Vector3.new(moveDir.X * speed * 0.1, moveDir.Y * speed * 0.1, 0)
-                pcall(function()
-                    hrp.CFrame = CFrame.new(newPos)
-                end)
-            end
+        -- sinkron kalau game memindahkan kita jauh (teleport / respawn)
+        if not N.px or abs(s.x - N.px) > 3 or abs(s.y - N.py) > 3 then
+            N.px, N.py = s.x, s.y
         end
-    end
 
-    local function bindPartConnections(char)
-        for _, c in ipairs(N.PartConns) do pcall(function() c:Disconnect() end) end
-        table.clear(N.PartConns)
-        if not char then return end
-        
-        table.insert(N.PartConns, char.DescendantAdded:Connect(function(d)
-            if N.On and d:IsA("BasePart") then
-                if N.Saved[d] == nil then N.Saved[d] = d.CanCollide end
-                pcall(function() d.CanCollide = false; d.CanTouch = false end)
-            end
-        end))
-        
-        local hum = char:FindFirstChildOfClass("Humanoid")
-        if hum then
-            table.insert(N.PartConns, hum.StateChanged:Connect(function()
-                if N.On and alive() then N.apply(char) end
-            end))
-        end
-    end
+        local dx, dy = 0, 0
+        if keyDown("keyLeft", Enum.KeyCode.A, Enum.KeyCode.Left) then dx -= 1 end
+        if keyDown("keyRight", Enum.KeyCode.D, Enum.KeyCode.Right) then dx += 1 end
+        if keyDown("keyJump", Enum.KeyCode.W, Enum.KeyCode.Space) then dy -= 1 end   -- y naik = angka mengecil
+        if keyDown("keyDown", Enum.KeyCode.S, Enum.KeyCode.Down) then dy += 1 end
 
-    local function bindCharacter()
-        if N.Conn then pcall(function() N.Conn:Disconnect() end) N.Conn = nil end
-        local char = LocalPlayer.Character
-        if char then
-            N.apply(char)
-            bindPartConnections(char)
+        local w = Refs.World
+        local nx = N.px + dx * N.Speed * dt
+        local ny = N.py + dy * N.Speed * dt
+        if w then
+            nx = math.clamp(nx, 0.5, (w.w or 100) - 0.5)
+            ny = math.clamp(ny, 0.5, (w.h or 60) - 0.5)
         end
-        N.Conn = LocalPlayer.CharacterAdded:Connect(function(c)
-            if not alive() then return end
-            task.wait(0.1)
-            if not N.On then return end
-            N.apply(c)
-            bindPartConnections(c)
-            N.Status = "Aktif (respawn)"
-        end)
+        N.px, N.py = nx, ny
+
+        s.x, s.y = nx, ny
+        s.vx = 0
+        if type(s.vy) == "number" then s.vy = 0 end
+        if dx ~= 0 then s.facing = dx end
+        s.grounded = true
+        N.Status = "Aktif"
     end
 
     function N.enable()
         if N.On then return true end
         N.On = true
         N.Saved = {}
-        bindCharacter()
+        N.px, N.py = nil, nil
+        partsCollide(false)
         N.Status = "Aktif"
-        
-        -- Loop utama yang sangat cepat (anti-nyangkut)
-        if N.Heartbeat then pcall(function() N.Heartbeat:Disconnect() end) end
-        N.Heartbeat = RunService.Heartbeat:Connect(function()
-            if N.On and alive() then
-                local char = LocalPlayer.Character
-                if char then
-                    local hum = char:FindFirstChildOfClass("Humanoid")
-                    -- Paksa terus-terusan mematikan collision dan platform stand
-                    if hum and not hum.PlatformStand then
-                        hum.PlatformStand = true
-                    end
-                    eachPart(char, function(p)
-                        if p.CanCollide then
-                            if N.Saved[p] == nil then N.Saved[p] = p.CanCollide end
-                            pcall(function() p.CanCollide = false end)
-                        end
-                    end)
-                    N.forceTeleport()
-                end
+        if N.Conn then pcall(function() N.Conn:Disconnect() end) end
+        N.Conn = RunService.Heartbeat:Connect(function(dt)
+            if not alive() then
+                if N.Conn then N.Conn:Disconnect() N.Conn = nil end
+                return
             end
+            if not N.On then return end
+            local ok, err = pcall(N.step, dt)
+            if not ok then N.Status = "Error: " .. tostring(err) end
+            partsCollide(false)
         end)
         return true
     end
@@ -4173,11 +4087,9 @@ do
     function N.disable()
         if not N.On then return true end
         N.On = false
-        N.restore()
-        if N.Heartbeat then pcall(function() N.Heartbeat:Disconnect() end) N.Heartbeat = nil end
-        for _, c in ipairs(N.PartConns) do pcall(function() c:Disconnect() end) end
-        table.clear(N.PartConns)
         if N.Conn then pcall(function() N.Conn:Disconnect() end) N.Conn = nil end
+        N.restore()
+        N.px, N.py = nil, nil
         N.Status = "Mati"
         return true
     end
@@ -5235,7 +5147,7 @@ do
 local cMain = card(PageV, "NOCLIP VISUAL", "Karakter menembus tembok / lantai (versi agresif)")
 
 local cbNoclip
-cbNoclip = checkbox(cMain, "Aktifkan Noclip", "Tembus tembok + hapus weld + PlatformStand + teleport arah", N.On, function(on)
+cbNoclip = checkbox(cMain, "Aktifkan Noclip", "Geser posisi game langsung, tembus blok (kiri/kanan/lompat/bawah)", N.On, function(on)
     if on then
         N.enable()
         toast("Noclip aktif")
@@ -5250,12 +5162,12 @@ local stLabel = label(cStat, { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enu
     Text = "Mati", TextWrapped = true, TextSize = 13, Font = FM })
 local infoLabel = label(cStat, { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
     TextWrapped = true, TextSize = 12, TextColor3 = C.sub,
-    Text = "Noclip agresif: CanCollide off, weld luar dihapus, PlatformStand, geser posisi (A/D/W/S atau tombol auto). Fitur game (panen, PNB, navigasi) tetap memakai data tile — kalau kamu jatuh menembus lantai ke luar world, gunakan SEFTY → Auto Rejoin untuk masuk lagi." })
+    Text = "Noclip menggeser posisi game langsung: kiri/kanan = geser, lompat = naik, bawah = turun. Fitur game (panen, PNB, navigasi) tetap memakai data tile — kalau kamu jatuh menembus lantai ke luar world, gunakan SEFTY → Auto Rejoin untuk masuk lagi." })
 
 Updaters[#Updaters + 1] = function()
     local n = 0
     for _ in pairs(N.Saved) do n += 1 end
-    stLabel.Text = N.On and ("Noclip: " .. N.Status .. (" (%d part)"):format(n)) or "Noclip: Mati"
+    stLabel.Text = N.On and ("Noclip: " .. N.Status) or "Noclip: Mati"
     stLabel.TextColor3 = N.On and C.ok or C.text
     -- sinkronkan checkbox kalau status berubah dari luar (mis. respawn)
     if N.On ~= cbNoclip.get() then cbNoclip.set(N.On, true) end
