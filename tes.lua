@@ -4143,11 +4143,10 @@ do
                             end
                             if ix and iy then
                                 N.cf, N.cx, N.cy = f, ix, iy
-                                N.cxs, N.cys = {}, {}
-                                for i = math.max(1, ix - 2), math.min(#vals, ix + 8) do
-                                    if vals[i] == s.x then N.cxs[#N.cxs + 1] = i end
-                                    if vals[i] == s.y then N.cys[#N.cys + 1] = i end
-                                end
+                                -- posisi sekarang (ix, iy) + posisi frame sebelumnya (ix+3, iy+3) yang dipakai sapuan tabrakan
+                                N.cxs, N.cys = { ix }, { iy }
+                                if type(vals[ix + 3]) == "number" then N.cxs[#N.cxs + 1] = ix + 3 end
+                                if type(vals[iy + 3]) == "number" then N.cys[#N.cys + 1] = iy + 3 end
                                 return
                             end
                         end
