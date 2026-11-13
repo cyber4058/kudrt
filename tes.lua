@@ -4467,7 +4467,7 @@ do
         do
             local cnt = { keyLeft = 0, keyRight = 0, keyJump = 0, keyDown = 0 }
             add("TES TOMBOL: tahan panah kanan / kiri / lompat selama 5 detik ...")
-            toast("Tes tombol 5 detik: tahan panah / lompat sekarang")
+            if Misc.toast then pcall(Misc.toast, "Tes tombol 5 detik: tahan panah / lompat sekarang") end
             local t0 = os.clock()
             while os.clock() - t0 < 5 do
                 for k in pairs(cnt) do
@@ -4566,6 +4566,7 @@ local function toast(text)
     label(t, { AutomaticSize = Enum.AutomaticSize.XY, Text = text, TextColor3 = C.white, TextSize = 13, Font = FM })
     task.delay(2.6, function() pcall(function() t:Destroy() end) end)
 end
+Misc.toast = toast
 
 -- Ukuran window menyesuaikan layar
 local vp = (workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize) or Vector2.new(900, 600)
